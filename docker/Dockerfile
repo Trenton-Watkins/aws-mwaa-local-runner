@@ -2,11 +2,11 @@
 # AUTHOR: John Jackson
 # DESCRIPTION: Amazon MWAA Local Dev Environment
 # BUILD: docker build --rm -t amazon/mwaa-local .
+RUN pip install --user --upgrade pip
+RUN pip install --no-cace-dir --user -r /requirements.txt
 
 FROM amazonlinux:2023
 LABEL maintainer="amazon"
-RUN pip install --user --upgrade pip
-RUN pip install --no-cace-dir --user -r /requirements.txt
 
 # Airflow
 ## Version specific ARGs
