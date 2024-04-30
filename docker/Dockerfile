@@ -6,7 +6,7 @@
 FROM amazonlinux:2023
 LABEL maintainer="amazon"
 
-
+run python -m pip install --upgrade pip
 
 # Airflow
 ## Version specific ARGs
