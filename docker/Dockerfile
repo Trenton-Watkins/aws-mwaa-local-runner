@@ -1,7 +1,7 @@
 # VERSION 2.4
 # AUTHOR: John Jackson
 # DESCRIPTION: Amazon MWAA Local Dev Environment
-# BUILD: docker build --rm -t amazon/mwaa-local .
+BUILD: docker build --rm -t amazon/mwaa-local .
 RUN pip install --user --upgrade pip
 RUN pip install --no-cace-dir --user -r /requirements.txt
 
