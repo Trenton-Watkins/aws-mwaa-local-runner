@@ -6,7 +6,7 @@
 FROM amazonlinux:2023
 LABEL maintainer="amazon"
 
-run sudo apt install python3-pip
+RUN apt-get -y install python3-pip
 
 # Airflow
 ## Version specific ARGs
