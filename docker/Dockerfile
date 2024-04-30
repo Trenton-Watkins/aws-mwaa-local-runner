@@ -5,6 +5,9 @@
 
 FROM amazonlinux:2023
 LABEL maintainer="amazon"
+COPY requirements.txt /requirements.txt
+RUN pip install --user --upgrade pip
+RUN pip install --no-cace-dir --user -r /requirements.txt
 
 # Airflow
 ## Version specific ARGs
