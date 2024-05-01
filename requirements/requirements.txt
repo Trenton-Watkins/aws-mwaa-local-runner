@@ -1,5 +1,3 @@
---find-links /usr/local/airflow/plugins
---no-index
 --constraint "/usr/local/airflow/dags/constraints-3.7-amazon-6.0.txt"
 
 apache-airflow==2.2.2
