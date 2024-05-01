@@ -1,3 +1,17 @@
+--find-links /usr/local/airflow/plugins
+--no-index
 --constraint "/usr/local/airflow/dags/constraints-3.7-amazon-6.0.txt"
 
-apache-airflow-providers-amazon==6.0.0
+apache-airflow==2.2.2
+apache-airflow-providers-snowflake==2.3.0
+apache-airflow-providers-jdbc==2.0.1
+apache-airflow-providers-slack==4.1.0
+apache-airflow-providers-microsoft-mssql==2.0.1
+apache-airflow-providers-mysql==2.1.1
+apache-airflow-providers-microsoft-azure==3.3.0
+apache-airflow-providers-ssh==2.3.0
+smart-open==6.0.0
+xlrd==2.0.1
+slack_sdk==3.11.2
+oauth2==1.9.0.post1
+watchtower~=2.0.1
