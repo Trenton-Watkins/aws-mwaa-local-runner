@@ -8,7 +8,6 @@ from bs4 import BeautifulSoup
 import sqlite3
 import numpy as np
 import pandas as pd
-import xlsxwriter
 import gspread
 from selenium import webdriver
 import time
