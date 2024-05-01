@@ -658,7 +658,7 @@ def updatestats():
 
         sheet.update('E12',batter_stats.values.tolist())
         sheet.update('E32',batter_stats_last.values.tolist())
-
+    return print('baseball stat run complete')
 
 
 
