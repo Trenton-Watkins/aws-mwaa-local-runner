@@ -9,8 +9,7 @@ import sqlite3
 import numpy as np
 import pandas as pd
 import gspread
-from selenium import webdriver
-import time
+
 
 def updatestats():
     url = 'https://baseballmonster.com/Lineups.aspx?csv=1'
