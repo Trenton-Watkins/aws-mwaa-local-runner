@@ -9,9 +9,20 @@ import sqlite3
 import numpy as np
 import pandas as pd
 import gspread
+import boto3
 
 
 def updatestats():
+
+    def data_pull(file):
+        project = obj.get_object(Bucket= 'cbbdata2023', Key= file) 
+        frame = pd.read_csv(project['Body'])
+        return frame
+
+    obj = boto3.client("s3",
+                aws_access_key_id='AKIAQRO37AJWNMC7G3OL',
+                aws_secret_access_key='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')
+    
     url = 'https://baseballmonster.com/Lineups.aspx?csv=1'
 
     lineups = pd.read_csv(url)
@@ -40,7 +51,9 @@ def updatestats():
     ##files.download('Mlbreg.csv')
     current.head()
 
-    lah = pd.read_csv('playersmlb.csv')
+    lah =data_pull('playersmlb.csv')
+
+    # lah = pd.read_csv('playersmlb.csv')
     # lah.to_csv('players.csv')
     ##files.download('players.csv')
     lah.head()
