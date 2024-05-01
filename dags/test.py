@@ -1,7 +1,7 @@
 
 
 from datetime import datetime, timedelta
-from db_util
+from db_util import db_connect
 from airflow import DAG
 from airflow.operators.python_operator import PythonOperator
 
