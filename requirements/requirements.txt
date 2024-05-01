@@ -14,4 +14,4 @@ slack_sdk==3.11.2
 oauth2==1.9.0.post1
 watchtower~=2.0.1
 pybaseball==2.2.7
-gspread==6.1.0
+gspread==6.0.0
