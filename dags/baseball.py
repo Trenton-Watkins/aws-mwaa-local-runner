@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 import gspread
 import boto3
+import json
 
 
 def updatestats():
@@ -53,6 +54,8 @@ def updatestats():
 
     lah =data_pull('playersmlb.csv')
 
+
+    wnba_json = obj.get_object(Bucket= 'cbbdata2023', Key= 'wnba-files-8e603d581b08.json')["Body"].read()
     # lah = pd.read_csv('playersmlb.csv')
     # lah.to_csv('players.csv')
     ##files.download('players.csv')
@@ -559,7 +562,7 @@ def updatestats():
     teamlist = slate['teamcode_x'].unique().tolist()
 
 
-    gc = gspread.service_account(filename = 'wnba-files-8e603d581b08.json')  
+    gc = gspread.service_account(filename = wnba_json)  
     main = gc.open_by_url('https://docs.google.com/spreadsheets/d/1VGPOayA65DmOIFPg16rEywQZxC0-x4liYST9VvVjGRI/edit')
 
     for name in teamlist:
