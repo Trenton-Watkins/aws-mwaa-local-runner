@@ -3,7 +3,7 @@ from airflow.operators.python_operator import PythonOperator
 from airflow.models import Variable
 from datetime import datetime, timedelta
 from db_util import db_connect
-import genGlAllocationsSql as glSql
+import genGlAllocationDriversSql as glSql
 
 ALERT_MESSAGE = "Daily load seems to have failed. WARNING: Updates for this run will be delayed."
 ENV = "PRODUCTION" if Variable.get("AIRFLOW_ENV", default_var="stg") == "prd" else "STAGING"
