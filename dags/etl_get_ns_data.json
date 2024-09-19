@@ -1,0 +1,31 @@
+{
+    dag_name: "ods_get_ns_cm_gl",
+    dev_dag_schedule: null,
+    dag_schedule: null,
+    dag_retries: 3,
+    slack_channel: "",
+    dependencies: [
+    "process_gl_activity"],
+    tasks: [
+    {
+    task_type: "data",
+    task_name: "process_gl_activity",
+    source_module: "getNsdata",
+    source_attribute: "getNSactivity",
+    source_sql: "",
+    variable_module: "",
+    variable_attribute: "",
+    variable_connection: "target",
+    target_table: "ods.ns_cm_gl_activity",
+    truncate_table: true,
+    source_hook: "netsuite",
+    source_hook_type: "jdbc",
+    target_hook: "snowflake_ods_staging",
+    target_hook_type: "snowflake",
+    post_process_module: "",
+    post_process_attribute: "",
+    post_process_sql: { },
+    active: true
+    }
+    ]
+    }

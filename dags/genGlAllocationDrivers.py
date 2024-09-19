@@ -35,6 +35,7 @@ periodStartDate = cn.month_start_date
 periodEndDate = cn.month_end_date
 
 
+
 sql= glSql.getRules
 a = read_cursor.execute(sql)
 
