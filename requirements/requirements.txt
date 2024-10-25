@@ -21,3 +21,4 @@ sqlalchemy
 tqdm
 boto3
 pytz
+openpyxl
