@@ -1,7 +1,7 @@
 getChargeDetails =  """
 
                     SELECT BATCHSEQ, MESSAGE_CREATED_AT, MESSAGES, SHIPPER_ORDER_PLAN_CREATED_AT, ORDER_NUMBER, LEAN_LOAD_ID, LOAD_NUMBER, PRO_NUMBER, CARRIER_NAME, CARRIER_SCAC, CHARGE_TYPE, CHARGE_AMOUNT, CHARG_CATEGORY
-                    FROM PRD_DW.TMS.CHARGE_DETAILS;
+                    FROM TM_IGLOO_PRD.TMS_BACKPORT.CHARGE_DETAILS ;
 
                 """
 
@@ -25,7 +25,7 @@ getOrderPLan =  """
                             pickupdeparturedate  ,
                             deliveryarrivaldate ,
                             pallets
-                    FROM PRD_DW.TMS.TMS_ORDERPLAN;
+                    FROM  TM_IGLOO_PRD.AD_HOC.TMS_ORDERPLAN ;
 
                 """
 

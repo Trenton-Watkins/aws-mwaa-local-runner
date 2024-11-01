@@ -3,7 +3,7 @@ from airflow.operators.python_operator import PythonOperator
 from airflow.models import Variable
 from datetime import datetime, timedelta
 from db_util import db_connect
-import genGlAllocationDriversSqlPRD as glSql
+import genGLAllocationDriversSqlPRD as glSql
 
 ALERT_MESSAGE = "Daily load seems to have failed. WARNING: Updates for this run will be delayed."
 ENV = "PRODUCTION" if Variable.get("AIRFLOW_ENV", default_var="stg") == "prd" else "STAGING"
@@ -58,7 +58,6 @@ def getRules():
 
 #     return rows
 
-
 def processGlAllocRules(rowCn, period, periodStartDate, periodEndDate):
     status = None
     ruleId = rowCn.id
@@ -67,6 +66,7 @@ def processGlAllocRules(rowCn, period, periodStartDate, periodEndDate):
     sqlAttribute = rowCn.rule_sql
     tranColumn = rowCn.tran_column
     rulename = rowCn.rule
+
 
     sql = getattr(glSql, sqlAttribute + 'Header')
 
@@ -197,8 +197,7 @@ def processNSAllocations(rowCn, runid, periodStartDate, periodEndDate,periodname
                             AND level1 = '{accountmap}'), 
                         '40100') """
     else:
-        joinclause +=f"""
-                    LEFT JOIN ods.GL_ALLOC_DRIVER_DETAIL dd ON dd.rule_id ={ruleId} {joinfilter}
+        joinclause +=f"""LEFT JOIN ods.GL_ALLOC_DRIVER_DETAIL dd ON dd.rule_id ={ruleId} {joinfilter}
                     """
         
     print('Running CreateNSAlloc')     
@@ -259,9 +258,7 @@ def processNSAllocations(rowCn, runid, periodStartDate, periodEndDate,periodname
 
 
 def processPostAllocations( periodStartDate, periodEndDate):  
-    sql = glSql.catchAllocation 
-    sql = sql.format( startDate=periodStartDate, endDate=periodEndDate)
-    writeConn.db_execute(sql)
+  
     
     print('Creating OOB')
     sql = glSql.createTranOob
@@ -281,7 +278,20 @@ def processPostAllocations( periodStartDate, periodEndDate):
     # print(sql)
     writeConn.db_execute(sql)
     
+    
+    sql = glSql.createAccountTranOob 
+    # sql = getattr(glSql, sqlAttribute + 'Detail')
 
+    sql = sql.format( startDate=periodStartDate, endDate=periodEndDate)
+    # print(sql)
+    writeConn.db_execute(sql)
+    
+    sql = glSql.updateAccountTranAlloc 
+    # sql = getattr(glSql, sqlAttribute + 'Detail')
+
+    sql = sql.format( startDate=periodStartDate, endDate=periodEndDate)
+    # print(sql)
+    writeConn.db_execute(sql)
     
 
 
@@ -318,10 +328,32 @@ def processRules():
     
     writeConn.db_execute("""truncate ods.GL_ALLOC_DRIVER_HEADER""")
     writeConn.db_execute("""truncate ods.GL_ALLOC_DRIVER_DETAIL""")
-   
+    writeConn.db_execute("""truncate ods.inbnd_freight_costs""")
+
+
     period, periodStartDate, periodEndDate,periodname = getPeriod()
     rows = getRules()
 
+    
+    
+
+  
+    sql = getattr(glSql, 'getInboundFreight')
+
+    sql = sql.format( endDate=periodEndDate )
+
+
+    print(sql)
+
+    writeConn.db_execute(sql, commit=True)
+
+
+    writeConn.db_execute(f""" delete from ods.freight_costs_log
+                         where period_end_date = '{periodEndDate}'""")
+
+
+    writeConn.db_execute(f""" insert into ods.freight_costs_log
+                         select *,'{periodEndDate}' from ods.inbnd_freight_costs""")
 
     for row in rows:
 
@@ -359,6 +391,10 @@ def processAllocation():
     for row in rows:
         rowCn = readConn.columnName(row)
         status = processGlAllocations(rowCn,  periodStartDate, periodEndDate)
+    
+    sql = glSql.catchAllocation 
+    sql = sql.format( startDate=periodStartDate, endDate=periodEndDate)
+    writeConn.db_execute(sql)    
 
 def processAllocationsNS():
     global readConn, writeConn
@@ -431,3 +467,5 @@ with DAG('ods_gl_allocations_main_prd_data', default_args=default_args,
 
 
 spProcessRules >> spProcessAllocation >> spProcessNSAllocation >> spProcessODSRounding
+
+# spProcessRules >> spProcessAllocation >> spProcessODSRounding

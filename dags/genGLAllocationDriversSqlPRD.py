@@ -26,6 +26,57 @@ getRules = """
             FROM ods.gl_allocation_rules
             """
 
+getInboundFreight ="""
+ 
+                insert into TM_IGLOO_ODS_STG.ods.inbnd_freight_costs(SKU,INBOUND_FREIGHT_PER_UNIT) 
+                SELECT sku , sum(allocated_cost) / sum(units_received)
+                AS inbound_freight_per_unit FROM ( with order_plan as(
+                select *
+                from
+                ods.TMS_ORDERPLAN),
+                purchase_order AS (
+                SELECT  poi.PO_NUMBER, poi.SKU_OR_UPC ,poi.FIRST_RECEIPT_DATE ,poi.VENDOR_NAME ,sum(poi.QUANTITY_RECEIVED_EACHES) AS units_received 
+                FROM TM_IGLOO_ODS_STG.ods.NS_PO_DETAIL poi
+                WHERE poi.FIRST_RECEIPT_DATE >= DATEADD(DAY,-90,'{endDate}')
+                AND poi.QUANTITY_RECEIVED_EACHES >0
+                GROUP BY  poi.PO_NUMBER ,poi.SKU_OR_UPC ,poi.FIRST_RECEIPT_DATE ,poi.VENDOR_NAME )
+                select
+                cd.load_number,
+                op.ordernumber as po_number,
+                po.sku_or_UPC AS sku,
+                it.UOM_WEIGHT,
+                po.vendor_name,
+                op.ordergroup,
+                cd.carrier_name,
+                op.servicelevel,
+                op.pickupdeparturedate,
+                op.deliveryarrivaldate,
+                po.first_receipt_date,
+                op.pallets,
+                po.units_received AS units_received,
+                it.UOM_WEIGHT *  po.units_received AS sku_total_weight,
+                sku_total_weight / sum(sku_total_weight) OVER (PARTITION BY LOAD_NUMBER) AS relativeweight,
+                sum(cd.charge_amount) as load_cost,
+                relativeweight * sum(cd.CHARGE_AMOUNT) AS allocated_cost
+                from
+                ods.TMS_CHARGE_DETAILS as cd,
+                order_plan as op,
+                purchase_order as po,
+                TM_IGLOO_ODS_STG.staging.STG_HJ_ITEM_DATA_RN it
+                where
+                cd.load_number = op.loadnumber
+                and op.ordernumber = po.po_number 
+                AND it.ITEM_NUMBER = po.SKU_OR_UPC
+                group by 
+                1,2,3,4,5,6,7,8,9,10,11,12,13,14
+                ORDER BY 
+                load_number,po_number )
+                GROUP BY sku
+                
+                
+    
+"""
+
 insertNSHeader =""""""
 
 insertNSDetail =""""""
@@ -156,7 +207,7 @@ insertVendorHeader = """
                         sum(trn.{tranColumn})  AS total_amt ,sum(trn.tran_qty) as total_qty
                         FROM ods.V_PROD_TRANSACTIONS trn
                         LEFT OUTER JOIN ods.NS_FC_XREF fc ON fc.NS_FC_ID = trn.LOCATION_ID 
-                        LEFT OUTER JOIN ods.CURR_ITEMS ci ON trn.sku  = ci.item_name  AND COALESCE(fc.ODS_FC_ID,2) = ci.fc_id 
+                        LEFT OUTER JOIN ods.V_CURR_ITEMS_PRD ci ON trn.sku  = ci.item_name  AND COALESCE(fc.ODS_FC_ID,2) = ci.fc_id 
                          WHERE trn.tran_gl_date between '{startDate}' and '{endDate}'
                         AND TRAN_TYPE = {tranType} AND TRAN_SUB_TYPE_ID = {tranSubType}
                         GROUP BY period_end_date, ci.PRIMARY_VENDOR_ID 
@@ -169,7 +220,7 @@ insertBrandHeader = """
                     sum(trn.{tranColumn})  AS total_amt ,sum(trn.tran_qty) as total_qty
                     FROM ods.V_PROD_TRANSACTIONS trn
                         LEFT OUTER JOIN ods.NS_FC_XREF fc ON fc.NS_FC_ID = trn.LOCATION_ID 
-                        LEFT OUTER JOIN ods.CURR_ITEMS ci ON trn.sku  = ci.item_name  AND COALESCE(fc.ODS_FC_ID,2) = ci.fc_id 
+                        LEFT OUTER JOIN ods.V_CURR_ITEMS_PRD ci ON trn.sku  = ci.item_name  AND COALESCE(fc.ODS_FC_ID,2) = ci.fc_id 
                      WHERE trn.tran_gl_date between '{startDate}' and '{endDate}'
                     AND TRAN_TYPE = {tranType} AND TRAN_SUB_TYPE_ID = {tranSubType}
                     GROUP BY period_end_date, ci.brand_id 
@@ -210,16 +261,17 @@ insertOrderCatHeader = """
 insertRefundsHeader = """
                     INSERT INTO ods.gl_alloc_driver_header(rule_id, period_end_date, level1 , level1_name , level2, level2_name, created_at, total_amt,total_qty)
                     SELECT {ruleId} AS rule_id, '{endDate}' AS period_end_date, 'credit' AS level1, cmi.ORDER_ID  AS level1_name, null as level2, null as level2_name, SYSDATE() AS created_at,
-                    sum(cmi.ROW_TOTAL) AS tran_amt ,sum(cmi.qty_refunded) as total_qty  FROM ods.CREDIT_MEMO_ITEMS cmi 
-                    WHERE cmi.SKU NOT IN ('membership-product','ice_pack_product') 
+                    sum(cmi.ROW_TOTAL) AS tran_amt ,sum(cmi.qty_refunded) as total_qty  FROM ods.V_CREDITMEMOITEMS cmi 
+                    LEFT JOIN ods.CURR_ITEMS ci ON ci.ITEM_NAME = cmi.sku AND ci.FC_ID =2
+                    WHERE cmi.SKU NOT IN ('membership-product','ice_pack_product') AND ci.GROUP_NAME NOT IN ('Bundle')
                     GROUP BY order_id,period_end_date
                     HAVING tran_amt <>0 or total_qty <>0
                     """
 insertCMSOrderHeader = """
                     INSERT INTO ods.gl_alloc_driver_header(rule_id, period_end_date, level1 , level1_name , level2, level2_name, created_at, total_amt,total_qty)
                     SELECT {ruleId} AS rule_id, '{endDate}' AS period_end_date, 'credit' AS level1, od.ORDER_ID  AS level1_name, null as level2, null as level2_name, SYSDATE() AS created_at,
-                    sum(od.ROW_TOTAL) AS tran_amt ,sum(od.qty_ordered) as total_qty  FROM ods.order_detail od 
-                    WHERE od.SKU NOT IN ('membership-product','ice_pack_product') 
+                    sum(od.base_original_price * od.qty_ordered) AS tran_amt ,sum(od.qty_ordered) as total_qty  FROM ods.order_detail od 
+                    WHERE od.SKU NOT IN ('membership-product','ice_pack_product') and od.product_type not in ('bundle')
                     GROUP BY order_id,period_end_date
                     HAVING tran_amt <>0 or total_qty <>0
                     """
@@ -255,8 +307,8 @@ insertInboundHeader = """
                     SELECT {ruleId} AS rule_id, '{endDate}' AS period_end_date, 'inbound' AS level1, NULL   AS level1_name, null as level2, null as level2_name, SYSDATE() AS created_at,
                     sum(freight_costs) AS cost ,sum(shipped_qty) as total_qty  FROM (SELECT tr.sku,ib.inbound_freight_per_unit, sum(tr.tran_qty)AS shipped_qty, sum(tr.tran_qty * COALESCE(ib.inbound_freight_per_unit,0))  AS freight_costs
                         FROM TM_IGLOO_ODS_STG.ods.V_PROD_TRANSACTIONS tr 
-                        LEFT JOIN ods.curr_items ci ON ci.fc_id =2  AND ci.item_name = tr.sku
-                        LEFT JOIN ods.inbound_freight_costs ib ON ib.sku = tr.SKU 
+                        LEFT JOIN ods.V_CURR_ITEMS_PRD ci ON ci.fc_id =2  AND ci.item_name = tr.sku
+                        LEFT JOIN ods.inbnd_freight_costs ib ON ib.sku = tr.SKU 
                         WHERE tr.tran_sub_type_id = 16 and tr.tran_gl_date BETWEEN '{startDate}' AND '{endDate}' 
                         AND ci.del_pickup ='Pickup'
                         GROUP BY tr.sku,ib.inbound_freight_per_unit)
@@ -390,7 +442,7 @@ insertAllDetail = """
                     case when coalesce(gadh.total_amt, 0) <> 0 then sku_amt/gadh.total_amt else 0 end AS alloc_pct,
                     case when coalesce(gadh.total_qty, 0) <> 0 then sku_qty/gadh.total_qty else 0 end AS qty_alloc_pct
                     FROM ods.V_PROD_TRANSACTIONS trn
-                    LEFT OUTER JOIN ods.CURR_ITEMS ci ON trn.sku  = ci.item_name  AND 2 = ci.fc_id 
+                    LEFT OUTER JOIN ods.V_CURR_ITEMS_PRD ci ON trn.sku  = ci.item_name  AND 2 = ci.fc_id 
                     INNER JOIN ods.gl_alloc_driver_header gadh ON  {ruleId} = gadh.rule_id 
                     WHERE trn.tran_gl_date between '{startDate}' and '{endDate}'
                     AND TRAN_TYPE = {tranType} AND TRAN_SUB_TYPE_ID = {tranSubType}
@@ -404,7 +456,7 @@ insertVfiTprDetail = """
                     case when coalesce(gadh.total_amt, 0) <> 0 then sku_amt/gadh.total_amt else 0 end AS alloc_pct,
                     case when coalesce(gadh.total_qty, 0) <> 0 then sku_qty/gadh.total_qty else 0 end AS qty_alloc_pct
                     FROM ods.V_PROD_TRANSACTIONS trn
-                    LEFT OUTER JOIN ods.CURR_ITEMS ci ON trn.sku  = ci.item_name  AND 2 = ci.fc_id 
+                    LEFT OUTER JOIN ods.V_CURR_ITEMS_PRD ci ON trn.sku  = ci.item_name  AND 2 = ci.fc_id 
                     INNER JOIN ods.gl_alloc_driver_header gadh ON  {ruleId} = gadh.rule_id 
                     WHERE trn.tran_gl_date between '{startDate}' and '{endDate}'
                     AND TRAN_TYPE = {tranType} AND TRAN_SUB_TYPE_ID = {tranSubType}
@@ -417,7 +469,7 @@ insertVfiAstprDetail = """
                     case when coalesce(gadh.total_amt, 0) <> 0 then sku_amt/gadh.total_amt else 0 end AS alloc_pct,
                     case when coalesce(gadh.total_qty, 0) <> 0 then sku_qty/gadh.total_qty else 0 end AS qty_alloc_pct
                     FROM ods.V_PROD_TRANSACTIONS trn
-                    LEFT OUTER JOIN ods.CURR_ITEMS ci ON trn.sku  = ci.item_name  AND 2 = ci.fc_id 
+                    LEFT OUTER JOIN ods.V_CURR_ITEMS_PRD ci ON trn.sku  = ci.item_name  AND 2 = ci.fc_id 
                     INNER JOIN ods.gl_alloc_driver_header gadh ON  {ruleId} = gadh.rule_id 
                     WHERE trn.tran_gl_date between '{startDate}' and '{endDate}'
                     AND TRAN_TYPE = {tranType} AND TRAN_SUB_TYPE_ID = {tranSubType}
@@ -431,7 +483,7 @@ insertVfiRebatesDetail = """
                     case when coalesce(gadh.total_amt, 0) <> 0 then sku_amt/gadh.total_amt else 0 end AS alloc_pct,
                     case when coalesce(gadh.total_qty, 0) <> 0 then sku_qty/gadh.total_qty else 0 end AS qty_alloc_pct
                     FROM ods.V_PROD_TRANSACTIONS trn
-                    LEFT OUTER JOIN ods.CURR_ITEMS ci ON trn.sku  = ci.item_name  AND 2 = ci.fc_id 
+                    LEFT OUTER JOIN ods.V_CURR_ITEMS_PRD ci ON trn.sku  = ci.item_name  AND 2 = ci.fc_id 
                     INNER JOIN ods.gl_alloc_driver_header gadh ON  {ruleId} = gadh.rule_id 
                     WHERE trn.tran_gl_date between '{startDate}' and '{endDate}'
                     AND TRAN_TYPE = {tranType} AND TRAN_SUB_TYPE_ID = {tranSubType} and tran_amt >0
@@ -445,7 +497,7 @@ insertVfiColdDetail = """
                     case when coalesce(gadh.total_amt, 0) <> 0 then sku_amt/gadh.total_amt else 0 end AS alloc_pct,
                     case when coalesce(gadh.total_qty, 0) <> 0 then sku_qty/gadh.total_qty else 0 end AS qty_alloc_pct
                     FROM ods.V_PROD_TRANSACTIONS trn
-                    LEFT OUTER JOIN ods.CURR_ITEMS ci ON trn.sku  = ci.item_name  AND 2 = ci.fc_id 
+                    LEFT OUTER JOIN ods.V_CURR_ITEMS_PRD ci ON trn.sku  = ci.item_name  AND 2 = ci.fc_id 
                     INNER JOIN ods.gl_alloc_driver_header gadh ON  {ruleId} = gadh.rule_id 
                     WHERE trn.tran_gl_date between '{startDate}' and '{endDate}'
                     AND TRAN_TYPE = {tranType} AND TRAN_SUB_TYPE_ID = {tranSubType}
@@ -460,7 +512,7 @@ insertVfiFreeFillDetail = """
                     case when coalesce(gadh.total_qty, 0) <> 0 then sku_qty/gadh.total_qty else 0 end AS qty_alloc_pct
                     FROM ods.V_PROD_TRANSACTIONS trn
                     left join ods.FREE_FILL ff ON ff.VENDOR_FUNDING__FREE_FILL_B_ID = trn.brand_marketing_id
-                    LEFT OUTER JOIN ods.CURR_ITEMS ci ON ff.UPC_CODE_ID  = ci.item_id  AND 2 = ci.fc_id 
+                    LEFT OUTER JOIN ods.V_CURR_ITEMS_PRD ci ON ff.UPC_CODE_ID  = ci.item_id  AND 2 = ci.fc_id 
                     INNER JOIN ods.gl_alloc_driver_header gadh ON  {ruleId} = gadh.rule_id 
                     WHERE trn.tran_gl_date between '{startDate}' and '{endDate}'
                     AND TRAN_TYPE = {tranType} AND TRAN_SUB_TYPE_ID = {tranSubType}
@@ -478,7 +530,7 @@ insertMakeGoodDetail = """
                     case when coalesce(gadh.total_amt, 0) <> 0 then sku_amt/gadh.total_amt else 0 end AS alloc_pct,
                     case when coalesce(gadh.total_qty, 0) <> 0 then sku_qty/gadh.total_qty else 0 end AS qty_alloc_pct
                     FROM ods.V_PROD_TRANSACTIONS trn
-                    LEFT OUTER JOIN ods.CURR_ITEMS ci ON trn.sku  = ci.item_name  AND 2 = ci.fc_id 
+                    LEFT OUTER JOIN ods.V_CURR_ITEMS_PRD ci ON trn.sku  = ci.item_name  AND 2 = ci.fc_id 
                     INNER JOIN ods.gl_alloc_driver_header gadh ON  {ruleId} = gadh.rule_id 
                     WHERE trn.tran_gl_date between '{startDate}' and '{endDate}' and trn.tran_amt = 0  
                     AND TRAN_TYPE = {tranType} AND TRAN_SUB_TYPE_ID = {tranSubType}
@@ -572,7 +624,7 @@ insertVendorDetail = """
                     case when coalesce(gadh.total_qty, 0) <> 0 then sku_qty/gadh.total_qty else 0 end AS qty_alloc_pct
                     FROM ods.V_PROD_TRANSACTIONS trn
                     LEFT OUTER JOIN ods.NS_FC_XREF fc ON fc.NS_FC_ID = trn.LOCATION_ID 
-                        LEFT OUTER JOIN ods.CURR_ITEMS ci ON trn.sku  = ci.item_name  AND COALESCE(fc.ODS_FC_ID,2) = ci.fc_id  
+                        LEFT OUTER JOIN ods.V_CURR_ITEMS_PRD ci ON trn.sku  = ci.item_name  AND COALESCE(fc.ODS_FC_ID,2) = ci.fc_id  
                     INNER JOIN ods.gl_alloc_driver_header gadh ON ci.PRIMARY_VENDOR_ID::varchar(100) = gadh.level1_name AND {ruleId} = gadh.rule_id 
                     WHERE trn.tran_gl_date between '{startDate}' and '{endDate}'
                     AND TRAN_TYPE = {tranType} AND TRAN_SUB_TYPE_ID = {tranSubType}
@@ -587,7 +639,7 @@ insertBrandDetail = """
                     case when coalesce(gadh.total_qty, 0) <> 0 then sku_qty/gadh.total_qty else 0 end AS qty_alloc_pct
                     FROM ods.V_PROD_TRANSACTIONS trn
                     LEFT OUTER JOIN ods.NS_FC_XREF fc ON fc.NS_FC_ID = trn.LOCATION_ID 
-                        LEFT OUTER JOIN ods.CURR_ITEMS ci ON trn.sku  = ci.item_name  AND COALESCE(fc.ODS_FC_ID,2) = ci.fc_id  
+                        LEFT OUTER JOIN ods.V_CURR_ITEMS_PRD ci ON trn.sku  = ci.item_name  AND COALESCE(fc.ODS_FC_ID,2) = ci.fc_id  
                     INNER JOIN ods.gl_alloc_driver_header gadh ON ci.brand_id::varchar(100) = gadh.level1_name AND {ruleId} = gadh.rule_id 
                     WHERE trn.tran_gl_date between '{startDate}' and '{endDate}'
                     AND TRAN_TYPE = {tranType} AND TRAN_SUB_TYPE_ID = {tranSubType}
@@ -610,8 +662,10 @@ insertRefundsDetail =   """
                     SYSDATE() AS created_at, sum(cmi.ROW_TOTAL) AS sku_amt,sum(cmi.qty_refunded) as sku_qty,
                     case when coalesce(gadh.total_amt, 0) <> 0 then sku_amt/gadh.total_amt else 0 end AS alloc_pct,
                     case when coalesce(gadh.total_qty, 0) <> 0 then sku_qty/gadh.total_qty else 0 end AS qty_alloc_pct
-                    FROM ods.CREDIT_MEMO_ITEMS cmi
+                    FROM ods.V_CREDITMEMOITEMS cmi
+                    LEFT JOIN ods.CURR_ITEMS ci ON ci.ITEM_NAME = cmi.sku AND ci.FC_ID =2
                     INNER JOIN ods.gl_alloc_driver_header gadh ON cmi.order_id::varchar(100) = gadh.level1_name AND {ruleId} = gadh.rule_id 
+                    where cmi.SKU NOT IN ('membership-product','ice_pack_product') AND ci.GROUP_NAME NOT IN ('Bundle')
                     GROUP BY  gadh.id, gadh.rule_id, gadh.LEVEL1_NAME, gadh.LEVEL2_NAME, cmi.sku,  gadh.total_amt,gadh.total_qty
                     """
 
@@ -619,11 +673,12 @@ insertRefundsDetail =   """
 insertCMSOrderDetail =   """
                     INSERT INTO ods.gl_alloc_driver_detail(gah_id, rule_id, level1, level2, sku, created_at, sku_amt, sku_qty, alloc_pct,qty_alloc_pct)
                     SELECT gadh.id, gadh.rule_id, gadh.LEVEL1_NAME, gadh.level2_NAME, sku, 
-                    SYSDATE() AS created_at, sum(od.ROW_TOTAL) AS sku_amt,sum(od.qty_ordered) as sku_qty,
+                    SYSDATE() AS created_at, sum(od.base_original_price * od.qty_ordered) AS sku_amt,sum(od.qty_ordered) as sku_qty,
                     case when coalesce(gadh.total_amt, 0) <> 0 then sku_amt/gadh.total_amt else 0 end AS alloc_pct,
                     case when coalesce(gadh.total_qty, 0) <> 0 then sku_qty/gadh.total_qty else 0 end AS qty_alloc_pct
                     FROM ods.order_detail od
                     INNER JOIN ods.gl_alloc_driver_header gadh ON od.order_id::varchar(100) = gadh.level1_name AND {ruleId} = gadh.rule_id 
+                    WHERE od.SKU NOT IN ('membership-product','ice_pack_product') and od.product_type not in ('bundle')
                     GROUP BY  gadh.id, gadh.rule_id, gadh.LEVEL1_NAME, gadh.LEVEL2_NAME, od.sku,  gadh.total_amt,gadh.total_qty
                     """
 
@@ -690,8 +745,8 @@ insertInboundDetail =   """
                                 case when coalesce(gadh.total_amt, 0) <> 0 then sku_amt/gadh.total_amt else 0 end AS alloc_pct,
                                 case when coalesce(gadh.total_qty, 0) <> 0 then sku_qty/gadh.total_qty else 0 end AS qty_alloc_pct
                 FROM TM_IGLOO_ODS_STG.ods.V_PROD_TRANSACTIONS tr 
-                LEFT JOIN ods.curr_items ci ON ci.fc_id =2  AND ci.item_name = tr.sku
-                LEFT JOIN ods.inbound_freight_costs ib ON ib.sku = tr.SKU 
+                LEFT JOIN ods.V_CURR_ITEMS_PRD ci ON ci.fc_id =2  AND ci.item_name = tr.sku
+                LEFT JOIN ods.inbnd_freight_costs ib ON ib.sku = tr.SKU 
                 INNER JOIN ods.GL_ALLOC_DRIVER_HEADER gadh ON gadh.RULE_ID ='{ruleId}'
                 WHERE tr.tran_sub_type_id = 16 and tr.tran_gl_date BETWEEN '{startDate}' AND '{endDate}' 
                 AND ci.del_pickup ='Pickup'
@@ -721,7 +776,7 @@ insertPackagingDetail =   """
                 LEFT JOIN poly pl ON 'Polybagged'= ic.COMMENT_TEXT 
                 GROUP BY item_number, wh_id)
                 ,fulfillments AS 
-                (SELECT tr.increment_id, tr.sku, sum(tr.tran_qty) AS tran_qty, sum(tran_amt) AS tran_amt, tr.magento_location_id FROM ODS.V_PROD_TRANSACTIONSTR 
+                (SELECT tr.increment_id, tr.sku, sum(tr.tran_qty) AS tran_qty, sum(tran_amt) AS tran_amt, tr.magento_location_id FROM ODS.V_PROD_TRANSACTIONS TR 
                 WHERE TR.tran_sub_type_id = 16
                 AND tr.magento_location_id IN (2,3,11) AND tr.tran_gl_date BETWEEN '{startDate}' AND '{endDate}' 
                 GROUP BY tr.increment_id, tr.sku,tr.magento_location_id )
@@ -829,13 +884,41 @@ getMapNS ="""
         SELECT * FROM ods.GL_ALLOCATION_MAP where type ='NS'
         """
 
+# createTranAlloc = """
+#                 insert into ods.gl_alloc  (
+#                 BATCH_ID, MAP_ID, TRAN_ID, ACCT_NUMBER, TRAN_DATE, 
+#                 GROUP_CODE, TRAN_TYPE, TRAN_SUB_TYPE_ID ,TRAN_SUB_TYPE, TRAN_TIME, ORDER_ID,ORDER_LINE_ID, 
+#                 SALE_DATE, INCREMENT_ID, ALLOC_RULE_ID, CATEGORY, 
+#                 LOCATION, SKU,GROUP_ID,GROUP_NAME,ITEM_CATEGORY_ID,ITEM_CATEGORY_NAME,SUBCATEGORY_ID,SUBCATEGORY_NAME,CLASS_ID,CLASS_NAME,SUBCLASS_ID,SUBCLASS_NAME, SKU_AMT, ALLOC_PCT, TOTAL_AMT, TRAN_AMT
+#                 ) 
+#                 SELECT dje.BATCH_ID,dje.MAP_ID,dje.TRAN_ID,dje.ACCT_NUMBER,dje.TRAN_DATE,dje.GROUP_CODE,{tran_type},{tran_sub_type_id} ,'{tran_sub_type}',dje.TRAN_TIME,dje.ORDER_ID,null,dje.SALE_DATE,dje.INCREMENT_ID,mp.ALLOC_RULE_ID,mp.CATEGORY,mp.LOCATION
+#                 ,dd.SKU
+#                 ,ci.GROUP_ID,ci.GROUP_NAME,ci.ITEM_CATEGORY_ID,ci.ITEM_CATEGORY_NAME,ci.SUBCATEGORY_ID,ci.SUBCATEGORY_NAME,ci.CLASS_ID,ci.CLASS_NAME,ci.SUBCLASS_ID,ci.SUBCLASS_NAME
+#                 ,dd.SKU_AMT,
+#                 CASE 
+#                 WHEN SUM(dd.SKU_AMT) OVER (PARTITION BY dje.ORDER_ID) = 0 THEN dd.qty_alloc_pct
+#                 ELSE dd.alloc_pct 
+#                 END AS allocation_pct, COALESCE(dje.DEBIT_AMT,0)- COALESCE(dje.CREDIT_AMT,0) AS total_amt, round((COALESCE(dje.DEBIT_AMT,0)- COALESCE(dje.CREDIT_AMT,0)) * allocation_pct,2) AS tran_amt 
+#                 FROM  ods.V_DJE dje
+#                 INNER JOIN ods.NETSUITE_ACCOUNTS na ON na.ACCOUNTNUMBER  = dje.ACCT_NUMBER 
+#                 INNER JOIN ods.GL_ALLOCATION_MAP mp ON mp.DJE_MAP_ID = dje.map_id   {join2}
+#                 INNER JOIN ods.GL_ALLOC_DRIVER_DETAIL dd ON dd.RULE_ID = mp.alloc_rule_id AND dd.LEVEL1 = dje.ORDER_ID::varchar {join}
+#                 INNER JOIN ods.V_PROD_TRANSACTIONS tr ON tr.TRAN_ID  =dje.TRAN_ID 
+#                 LEFT JOIN ods.V_CURR_ITEMS_PRD ci ON ci.item_name = dd.sku AND ci.FC_ID = 2
+#                 WHERE dje.TRAN_DATE BETWEEN '{startDate}' and '{endDate}' AND  na.TYPE_NAME IN ('Cost of Goods Sold','Income')
+#                 and dje.map_id = '{mapId}' and dd.rule_id = '{ruleId}'
+           
+#                 """
+
+
+
 createTranAlloc = """
                 insert into ods.gl_alloc  (
                 BATCH_ID, MAP_ID, TRAN_ID, ACCT_NUMBER, TRAN_DATE, 
                 GROUP_CODE, TRAN_TYPE, TRAN_SUB_TYPE_ID ,TRAN_SUB_TYPE, TRAN_TIME, ORDER_ID,ORDER_LINE_ID, 
                 SALE_DATE, INCREMENT_ID, ALLOC_RULE_ID, CATEGORY, 
                 LOCATION, SKU,GROUP_ID,GROUP_NAME,ITEM_CATEGORY_ID,ITEM_CATEGORY_NAME,SUBCATEGORY_ID,SUBCATEGORY_NAME,CLASS_ID,CLASS_NAME,SUBCLASS_ID,SUBCLASS_NAME, SKU_AMT, ALLOC_PCT, TOTAL_AMT, TRAN_AMT
-                ) 
+                ,month_end_date) 
                 SELECT dje.BATCH_ID,dje.MAP_ID,dje.TRAN_ID,dje.ACCT_NUMBER,dje.TRAN_DATE,dje.GROUP_CODE,{tran_type},{tran_sub_type_id} ,'{tran_sub_type}',dje.TRAN_TIME,dje.ORDER_ID,null,dje.SALE_DATE,dje.INCREMENT_ID,mp.ALLOC_RULE_ID,mp.CATEGORY,mp.LOCATION
                 ,dd.SKU
                 ,ci.GROUP_ID,ci.GROUP_NAME,ci.ITEM_CATEGORY_ID,ci.ITEM_CATEGORY_NAME,ci.SUBCATEGORY_ID,ci.SUBCATEGORY_NAME,ci.CLASS_ID,ci.CLASS_NAME,ci.SUBCLASS_ID,ci.SUBCLASS_NAME
@@ -844,15 +927,50 @@ createTranAlloc = """
                 WHEN SUM(dd.SKU_AMT) OVER (PARTITION BY dje.ORDER_ID) = 0 THEN dd.qty_alloc_pct
                 ELSE dd.alloc_pct 
                 END AS allocation_pct, COALESCE(dje.DEBIT_AMT,0)- COALESCE(dje.CREDIT_AMT,0) AS total_amt, round((COALESCE(dje.DEBIT_AMT,0)- COALESCE(dje.CREDIT_AMT,0)) * allocation_pct,2) AS tran_amt 
+                ,ap.ending::date
                 FROM  ods.V_DJE dje
                 INNER JOIN ods.NETSUITE_ACCOUNTS na ON na.ACCOUNTNUMBER  = dje.ACCT_NUMBER 
                 INNER JOIN ods.GL_ALLOCATION_MAP mp ON mp.DJE_MAP_ID = dje.map_id   {join2}
                 INNER JOIN ods.GL_ALLOC_DRIVER_DETAIL dd ON dd.RULE_ID = mp.alloc_rule_id AND dd.LEVEL1 = dje.ORDER_ID::varchar {join}
                 INNER JOIN ods.V_PROD_TRANSACTIONS tr ON tr.TRAN_ID  =dje.TRAN_ID 
-                LEFT JOIN ods.CURR_ITEMS ci ON ci.item_name = dd.sku AND ci.FC_ID = 2
-                WHERE dje.TRAN_DATE BETWEEN '{startDate}' and '{endDate}' AND  na.TYPE_NAME IN ('Cost of Goods Sold','Income')
+                INNER JOIN ods.V_JE_HEADER njh ON njh.BATCH_ID = dje.BATCH_ID AND njh.trandate = dje.tran_date
+                INNER JOIN ods.NS_ACCOUNTING_PERIODS ap ON ap.ACCOUNTING_PERIOD_ID = njh.ACCOUNTING_PERIOD_ID 
+                LEFT JOIN ods.V_CURR_ITEMS_PRD ci ON ci.item_name = dd.sku AND ci.FC_ID = 2
+                WHERE ap.ending::date = '{endDate}' AND  na.TYPE_NAME IN ('Cost of Goods Sold','Income')
                 and dje.map_id = '{mapId}' and dd.rule_id = '{ruleId}'
                 """
+
+
+# createTranErrors ="""
+#                 insert into  ods.gl_alloc  (
+#                 BATCH_ID, MAP_ID, TRAN_ID, ACCT_NUMBER, TRAN_DATE, 
+#                 GROUP_CODE, TRAN_TYPE, TRAN_SUB_TYPE_ID ,TRAN_SUB_TYPE, TRAN_TIME, ORDER_ID, ORDER_LINE_ID,
+#                 SALE_DATE, INCREMENT_ID, ALLOC_RULE_ID, CATEGORY, 
+#                 LOCATION, SKU,GROUP_ID,GROUP_NAME,ITEM_CATEGORY_ID,ITEM_CATEGORY_NAME,SUBCATEGORY_ID,SUBCATEGORY_NAME,CLASS_ID,CLASS_NAME,SUBCLASS_ID,SUBCLASS_NAME, SKU_AMT, ALLOC_PCT, TOTAL_AMT, TRAN_AMT
+#                 ,month_end_date)
+#                 WITH failures AS (SELECT dje.tran_id
+#                 FROM  ods.V_DJE dje
+#                 LEFT JOIN ods.NETSUITE_ACCOUNTS na ON na.ACCOUNTNUMBER  = dje.ACCT_NUMBER 
+#                 LEFT JOIN ods.GL_ALLOCATION_MAP mp ON mp.DJE_MAP_ID = dje.map_id {join2}
+#                 LEFT JOIN ods.GL_ALLOC_DRIVER_DETAIL dd ON dd.RULE_ID = mp.alloc_rule_id AND dd.LEVEL1 = dje.ORDER_ID::varchar {join}
+#                 WHERE dje.TRAN_DATE BETWEEN '{startDate}' and '{endDate}' AND  na.TYPE_NAME IN ('Cost of Goods Sold','Income')
+#                 and dje.map_id ='{mapId}'  AND dd.SKU IS NULL)
+#                 SELECT dje.BATCH_ID,dje.MAP_ID,dje.TRAN_ID,dje.ACCT_NUMBER,dje.TRAN_DATE,dje.GROUP_CODE,{tran_type},{tran_sub_type_id} ,'{tran_sub_type}',dje.TRAN_TIME,dje.ORDER_ID,null,dje.SALE_DATE,dje.INCREMENT_ID,2002,null,null
+#   				,dd.SKU
+#   				,ci.GROUP_ID,ci.GROUP_NAME,ci.ITEM_CATEGORY_ID,ci.ITEM_CATEGORY_NAME,ci.SUBCATEGORY_ID,ci.SUBCATEGORY_NAME,ci.CLASS_ID,ci.CLASS_NAME,ci.SUBCLASS_ID,ci.SUBCLASS_NAME
+#   				,dd.SKU_AMT,
+#                 CASE 
+#                 WHEN SUM(dd.SKU_AMT) OVER (PARTITION BY dje.ORDER_ID) = 0 THEN dd.qty_alloc_pct
+#                 ELSE dd.alloc_pct 
+#                 END AS allocation_pct, COALESCE(dje.DEBIT_AMT,0)- COALESCE(dje.CREDIT_AMT,0) AS total_amt, round((COALESCE(dje.DEBIT_AMT,0)- COALESCE(dje.CREDIT_AMT,0)) * allocation_pct,2) AS tran_amt 
+#                 FROM failures fl
+#                 INNER JOIN ods.V_DJE dje ON dje.TRAN_ID = fl.tran_id  
+#                 inner JOIN  ods.NETSUITE_ACCOUNTS na ON na.ACCOUNTNUMBER  = dje.ACCT_NUMBER 
+#                 INNER JOIN ods.GL_ALLOC_DRIVER_DETAIL dd ON dd.RULE_ID = 2002 AND dd.LEVEL1 = dje.ORDER_ID::varchar
+#                 INNER JOIN ods.V_PROD_TRANSACTIONS tr ON tr.TRAN_ID  =dje.TRAN_ID 
+#                 LEFT JOIN ods.V_CURR_ITEMS_PRD ci ON ci.item_name = dd.sku AND ci.FC_ID = 2
+#                 WHERE dje.TRAN_DATE BETWEEN '{startDate}' and '{endDate}' AND  na.TYPE_NAME IN ('Cost of Goods Sold','Income')
+#                 """
 
 createTranErrors ="""
                 insert into  ods.gl_alloc  (
@@ -860,13 +978,15 @@ createTranErrors ="""
                 GROUP_CODE, TRAN_TYPE, TRAN_SUB_TYPE_ID ,TRAN_SUB_TYPE, TRAN_TIME, ORDER_ID, ORDER_LINE_ID,
                 SALE_DATE, INCREMENT_ID, ALLOC_RULE_ID, CATEGORY, 
                 LOCATION, SKU,GROUP_ID,GROUP_NAME,ITEM_CATEGORY_ID,ITEM_CATEGORY_NAME,SUBCATEGORY_ID,SUBCATEGORY_NAME,CLASS_ID,CLASS_NAME,SUBCLASS_ID,SUBCLASS_NAME, SKU_AMT, ALLOC_PCT, TOTAL_AMT, TRAN_AMT
-                )
+                ,month_end_date)
                 WITH failures AS (SELECT dje.tran_id
                 FROM  ods.V_DJE dje
                 LEFT JOIN ods.NETSUITE_ACCOUNTS na ON na.ACCOUNTNUMBER  = dje.ACCT_NUMBER 
                 LEFT JOIN ods.GL_ALLOCATION_MAP mp ON mp.DJE_MAP_ID = dje.map_id {join2}
                 LEFT JOIN ods.GL_ALLOC_DRIVER_DETAIL dd ON dd.RULE_ID = mp.alloc_rule_id AND dd.LEVEL1 = dje.ORDER_ID::varchar {join}
-                WHERE dje.TRAN_DATE BETWEEN '{startDate}' and '{endDate}' AND  na.TYPE_NAME IN ('Cost of Goods Sold','Income')
+                INNER JOIN ods.V_JE_HEADER njh ON njh.BATCH_ID = dje.BATCH_ID AND njh.trandate = dje.tran_date
+                INNER JOIN ods.NS_ACCOUNTING_PERIODS ap ON ap.ACCOUNTING_PERIOD_ID = njh.ACCOUNTING_PERIOD_ID 
+                WHERE  ap.ending::date = '{endDate}'  AND  na.TYPE_NAME IN ('Cost of Goods Sold','Income')
                 and dje.map_id ='{mapId}'  AND dd.SKU IS NULL)
                 SELECT dje.BATCH_ID,dje.MAP_ID,dje.TRAN_ID,dje.ACCT_NUMBER,dje.TRAN_DATE,dje.GROUP_CODE,{tran_type},{tran_sub_type_id} ,'{tran_sub_type}',dje.TRAN_TIME,dje.ORDER_ID,null,dje.SALE_DATE,dje.INCREMENT_ID,2002,null,null
   				,dd.SKU
@@ -876,21 +996,44 @@ createTranErrors ="""
                 WHEN SUM(dd.SKU_AMT) OVER (PARTITION BY dje.ORDER_ID) = 0 THEN dd.qty_alloc_pct
                 ELSE dd.alloc_pct 
                 END AS allocation_pct, COALESCE(dje.DEBIT_AMT,0)- COALESCE(dje.CREDIT_AMT,0) AS total_amt, round((COALESCE(dje.DEBIT_AMT,0)- COALESCE(dje.CREDIT_AMT,0)) * allocation_pct,2) AS tran_amt 
+                ,'{endDate}'
                 FROM failures fl
-                INNER JOIN ods.DETAIL_JOURNAL_ENTRIES dje ON dje.TRAN_ID = fl.tran_id  
+                INNER JOIN ods.V_DJE dje ON dje.TRAN_ID = fl.tran_id  
                 inner JOIN  ods.NETSUITE_ACCOUNTS na ON na.ACCOUNTNUMBER  = dje.ACCT_NUMBER 
                 INNER JOIN ods.GL_ALLOC_DRIVER_DETAIL dd ON dd.RULE_ID = 2002 AND dd.LEVEL1 = dje.ORDER_ID::varchar
                 INNER JOIN ods.V_PROD_TRANSACTIONS tr ON tr.TRAN_ID  =dje.TRAN_ID 
-                LEFT JOIN ods.CURR_ITEMS ci ON ci.item_name = dd.sku AND ci.FC_ID = 2
-                WHERE dje.TRAN_DATE BETWEEN '{startDate}' and '{endDate}' AND  na.TYPE_NAME IN ('Cost of Goods Sold','Income')
+                LEFT JOIN ods.V_CURR_ITEMS_PRD ci ON ci.item_name = dd.sku AND ci.FC_ID = 2
+                INNER JOIN ods.V_JE_HEADER njh ON njh.BATCH_ID = dje.BATCH_ID AND njh.trandate = dje.tran_date
+                INNER JOIN ods.NS_ACCOUNTING_PERIODS ap ON ap.ACCOUNTING_PERIOD_ID = njh.ACCOUNTING_PERIOD_ID 
+                WHERE ap.ending::date = '{endDate}'   AND  na.TYPE_NAME IN ('Cost of Goods Sold','Income')
+                """
+
+
+createAccountTranOob = """
+                    CREATE  TEMP TABLE aoob as
+                    SELECT ACCT_NUMBER ,sum(total_var) AS total_var FROM (SELECT tran_id,ACCT_NUMBER ,total_amt , sum(tran_amt) ,total_amt- sum(tran_amt)AS total_var
+                    FROM ods.GL_ALLOC WHERE month_end_date  BETWEEN '{startDate}' and '{endDate}'
+                    GROUP BY tran_id,ACCT_NUMBER ,total_amt) GROUP BY acct_number
+                    """
+
+updateAccountTranAlloc = """
+                update ods.gl_alloc
+                set tran_amt = new_alloc_amt
+                FROM(
+                select det.tran_id,det.acct_number ,det.sku, det.tran_amt + case when total_var > 0 then .01 else -.01 end as new_alloc_amt, det.tran_amt FROM(select tran_id,ACCT_NUMBER ,sku, tran_amt,
+                                row_number() OVER  (PARTITION by ACCT_NUMBER order by tran_amt desc) as rn
+                                from  ods.gl_alloc tab
+                                where tab.tran_amt <> 0 and month_end_date  BETWEEN '{startDate}' and '{endDate}' ) det
+                                INNER JOIN aoob ON rn<abs(aoob.total_var *100) AND aoob.acct_number = det.acct_number) upd
+                        WHERE gl_alloc.TRAN_ID =upd.tran_id AND gl_alloc.SKU =upd.sku
                 """
 
 
 createTranOob = """
                     CREATE  TEMP TABLE oob as
-                    SELECT ACCT_NUMBER ,sum(total_var) AS total_var FROM (SELECT tran_id,ACCT_NUMBER ,total_amt , sum(tran_amt) ,total_amt- sum(tran_amt)AS total_var
-                    FROM ods.GL_ALLOC WHERE TRAN_DATE  BETWEEN '{startDate}' and '{endDate}'
-                    GROUP BY tran_id,ACCT_NUMBER ,total_amt) GROUP BY acct_number
+                    SELECT tran_id ,ACCT_NUMBER ,sum(total_var) AS total_var FROM (SELECT tran_id,ACCT_NUMBER ,total_amt , sum(tran_amt) ,total_amt- sum(tran_amt)AS total_var
+                    FROM ods.GL_ALLOC WHERE month_end_date  BETWEEN '{startDate}' and '{endDate}'
+                    GROUP BY tran_id,ACCT_NUMBER ,total_amt) GROUP BY tran_id ,acct_number
                     """
 
 updateTranAlloc = """
@@ -898,11 +1041,11 @@ updateTranAlloc = """
                 set tran_amt = new_alloc_amt
                 FROM(
                 select det.tran_id,det.acct_number ,det.sku, det.tran_amt + case when total_var > 0 then .01 else -.01 end as new_alloc_amt, det.tran_amt FROM(select tran_id,ACCT_NUMBER ,sku, tran_amt,
-                                row_number() OVER  (PARTITION by ACCT_NUMBER order by tran_amt desc) as rn
+                                row_number() OVER  (PARTITION by tran_id order by tran_amt desc) as rn
                                 from  ods.gl_alloc tab
-                                where tab.tran_amt <> 0 and TRAN_DATE  BETWEEN '{startDate}' and '{endDate}' ) det
-                                INNER JOIN oob ON rn<abs(oob.total_var *100) AND oob.acct_number = det.acct_number) upd
-                        WHERE gl_alloc.TRAN_ID =upd.tran_id AND gl_alloc.SKU =upd.sku
+                                where tab.tran_amt <> 0 and month_end_date  BETWEEN '{startDate}' and '{endDate}' ) det
+                                INNER JOIN oob ON rn<=abs(oob.total_var *100) AND oob.acct_number = det.acct_number AND oob.tran_id = det.tran_id ) upd
+                        WHERE gl_alloc.TRAN_ID =upd.tran_id AND gl_alloc.SKU =upd.sku and gl_alloc.acct_number = upd.acct_number 
                 """
 
 # insertToGlAllocation = """
@@ -919,7 +1062,7 @@ catchAllocation = """
                  insert into  ods.gl_alloc  (  BATCH_ID, MAP_ID, TRAN_ID, ACCT_NUMBER, TRAN_DATE, 
                 GROUP_CODE, TRAN_TYPE, TRAN_SUB_TYPE_ID ,TRAN_SUB_TYPE, TRAN_TIME, ORDER_ID, ORDER_LINE_ID,
                 SALE_DATE, INCREMENT_ID, ALLOC_RULE_ID, CATEGORY, 
-                LOCATION, SKU,GROUP_ID,GROUP_NAME,ITEM_CATEGORY_ID,ITEM_CATEGORY_NAME,SUBCATEGORY_ID,SUBCATEGORY_NAME,CLASS_ID,CLASS_NAME,SUBCLASS_ID,SUBCLASS_NAME, SKU_AMT, ALLOC_PCT, TOTAL_AMT, TRAN_AMT
+                LOCATION, SKU,GROUP_ID,GROUP_NAME,ITEM_CATEGORY_ID,ITEM_CATEGORY_NAME,SUBCATEGORY_ID,SUBCATEGORY_NAME,CLASS_ID,CLASS_NAME,SUBCLASS_ID,SUBCLASS_NAME, SKU_AMT, ALLOC_PCT, TOTAL_AMT, TRAN_AMT,month_end_date
                 )
                 WITH missing AS (WITH journals AS (
                 SELECT dje.ACCT_NUMBER AS acco, dje.tran_id AS tran,  
@@ -927,14 +1070,16 @@ catchAllocation = """
                         CASE WHEN dje.CREDIT_AMT IS NULL THEN 0 ELSE dje.CREDIT_AMT END) AS net  
                 FROM ods.V_DJE dje
                 INNER JOIN ods.NETSUITE_ACCOUNTS na ON na.ACCOUNTNUMBER = dje.ACCT_NUMBER 
-                WHERE dje.TRAN_DATE BETWEEN '{startDate}' and '{endDate}'
+                INNER JOIN ods.V_JE_HEADER njh ON njh.BATCH_ID = dje.BATCH_ID AND njh.trandate = dje.tran_date
+                INNER JOIN ods.NS_ACCOUNTING_PERIODS ap ON ap.ACCOUNTING_PERIOD_ID = njh.ACCOUNTING_PERIOD_ID 
+                WHERE ap.ending::date = '{endDate}'
                 AND na.type_name IN ('Cost of Goods Sold', 'Income') 
                 AND dje.sku IS NULL
                 GROUP BY dje.ACCT_NUMBER, dje.tran_id
                 ),
                 allocation AS (
                 SELECT gl.tran_id, gl.acct_number, SUM(gl.tran_amt) AS alloc_amt 
-                FROM ods.GL_ALLOC gl where gl.tran_date between '{startDate}' and '{endDate}'
+                FROM ods.GL_ALLOC gl where gl.month_end_date =  '{endDate}'
                 GROUP BY gl.tran_id, gl.acct_number
                 )
                 SELECT  DISTINCT je.tran
@@ -947,13 +1092,16 @@ catchAllocation = """
                 dd.SKU_AMT,CASE 
                                 WHEN SUM(dd.SKU_AMT) OVER (PARTITION BY dje.ORDER_ID) = 0 THEN dd.qty_alloc_pct
                                 ELSE dd.alloc_pct 
-                                END AS  allocation_pct, COALESCE(dje.DEBIT_AMT,0)- COALESCE(dje.CREDIT_AMT,0) AS total_amt, round((COALESCE(dje.DEBIT_AMT,0)- COALESCE(dje.CREDIT_AMT,0)) * allocation_pct,2) AS tran_amt 
+                                END AS  allocation_pct, COALESCE(dje.DEBIT_AMT,0)- COALESCE(dje.CREDIT_AMT,0) AS total_amt, round((COALESCE(dje.DEBIT_AMT,0)- COALESCE(dje.CREDIT_AMT,0)) * allocation_pct,2) AS tran_amt
+                                ,'{endDate}' 
                                 FROM ods.V_DJE dje 
                 INNER JOIN ods.NETSUITE_ACCOUNTS na ON na.accountnumber = dje.acct_number
                 LEFT JOIN ods.GL_ALLOC_DRIVER_DETAIL dd ON dd.rule_id =1
                 INNER JOIN ods.V_PROD_TRANSACTIONS tr ON tr.TRAN_ID  =dje.TRAN_ID 
-                LEFT JOIN ods.CURR_ITEMS ci ON ci.item_name = dd.sku AND ci.FC_ID = 2
-                WHERE dje.tran_date between '{startDate}' and '{endDate}' and dje.tran_id IN (SELECT * FROM missing ) AND na.type_name IN ('Cost of Goods Sold', 'Income') 
+                LEFT JOIN ods.V_CURR_ITEMS_PRD ci ON ci.item_name = dd.sku AND ci.FC_ID = 2
+                INNER JOIN ods.V_JE_HEADER njh ON njh.BATCH_ID = dje.BATCH_ID AND njh.trandate = dje.tran_date
+                INNER JOIN ods.NS_ACCOUNTING_PERIODS ap ON ap.ACCOUNTING_PERIOD_ID = njh.ACCOUNTING_PERIOD_ID 
+                WHERE ap.ending::date = '{endDate}' and dje.tran_id IN (SELECT * FROM missing ) AND na.type_name IN ('Cost of Goods Sold', 'Income') 
                         """
 
 # createNSalloc ="""
@@ -1002,7 +1150,7 @@ createNSAlloc = {"0 - Netsuite COGS Transactions  With Inventory items":
                 FROM TM_IGLOO_ODS_STG.ods.NS_CM_GL_ACTIVITY_inv
                 WHERE item_id IS NOT NULL  AND ITEM_UNIT_PRICE IS NOT null 
                 ) inv ON inv.transaction_id =cm.TRANSACTION_ID AND cm.ITEM_ID IS NULL
-                LEFT JOIN TM_IGLOO_ODS_STG.ods.CURR_ITEMS ci ON ci.ITEM_ID =inv.ITEM_ID::varchar AND ci.FC_ID =2
+                LEFT JOIN TM_IGLOO_ODS_STG.ods.V_CURR_ITEMS_PRD ci ON ci.ITEM_ID =inv.ITEM_ID::varchar AND ci.FC_ID =2
                 LEFT JOIN (SELECT DISTINCT MONTH_END_DATE,MONTHNAME(month_end_date) || ' ' || SUBSTRING(CALENDARYEARQTR,1,4) AS quartertext FROM TM_IGLOO_ODS_STG.ods.CAL_LU) cl ON cl.quartertext = cm.PERIODNAME 
                 WHERE inv.transaction_id IS NOT NULL and cm.PERIODNAME = '{period}' and ACCOUNTNAME::varchar = '{accountnumber}' and tran_allocated = 'N'
                  """,
@@ -1018,7 +1166,7 @@ createNSAlloc = {"0 - Netsuite COGS Transactions  With Inventory items":
                 FROM TM_IGLOO_ODS_STG.ods.NS_CM_GL_ACTIVITY_inv
                 WHERE item_id IS NOT NULL  AND ITEM_UNIT_PRICE IS NOT null
                 ) inv ON inv.transaction_id =cm.TRANSACTION_ID AND cm.ITEM_ID IS NULL
-                LEFT JOIN TM_IGLOO_ODS_STG.ods.CURR_ITEMS ci ON ci.ITEM_ID =inv.ITEM_ID::varchar AND ci.FC_ID =2
+                LEFT JOIN TM_IGLOO_ODS_STG.ods.V_CURR_ITEMS_PRD ci ON ci.ITEM_ID =inv.ITEM_ID::varchar AND ci.FC_ID =2
                 LEFT JOIN (SELECT DISTINCT MONTH_END_DATE,MONTHNAME(month_end_date) || ' ' || SUBSTRING(CALENDARYEARQTR,1,4) AS quartertext FROM TM_IGLOO_ODS_STG.ods.CAL_LU) cl ON cl.quartertext = cm.PERIODNAME 
                 WHERE inv.transaction_id IS NOT NULL and cm.PERIODNAME = '{period}' and ACCOUNTNAME::varchar = '{accountnumber}' and tran_allocated = 'N') upd
                 where upd.unique_key  = cm.unique_key 
@@ -1029,10 +1177,10 @@ createNSAlloc = {"0 - Netsuite COGS Transactions  With Inventory items":
                 SELECT ACCOUNTNAME,0,cm.unique_key,null,3001,NULL,NULL,ci.ITEM_NAME,ci.GROUP_ID,ci.GROUP_NAME,ci.ITEM_CATEGORY_ID,ci.ITEM_CATEGORY_NAME,ci.SUBCATEGORY_ID,ci.SUBCATEGORY_NAME,ci.CLASS_ID,ci.CLASS_NAME,ci.SUBCLASS_ID,ci.SUBCLASS_NAME,sysdate(),cm.amount,1,0,0,cm.amount
                 ,'{tran_type}','{tran_sub_type}','{tran_sub_type_id}'
                 FROM TM_IGLOO_ODS_STG.ods.NS_CM_GL_ACTIVITY cm
-                LEFT JOIN TM_IGLOO_ODS_STG.ods.CURR_ITEMS ci ON ci.ITEM_ID =cm.ITEM_ID::varchar AND ci.FC_ID =2
+                LEFT JOIN TM_IGLOO_ODS_STG.ods.V_CURR_ITEMS_PRD ci ON ci.ITEM_ID =cm.ITEM_ID::varchar AND ci.FC_ID =2
                 LEFT JOIN (SELECT DISTINCT MONTH_END_DATE,MONTHNAME(month_end_date) || ' ' || SUBSTRING(CALENDARYEARQTR,1,4) AS quartertext FROM TM_IGLOO_ODS_STG.ods.CAL_LU) cl ON cl.quartertext = cm.PERIODNAME 
                 WHERE cm.item_id IS NOT NULL AND cm.item_id NOT IN (SELECT DISTINCT ns.ITEM_ID FROM ods.NS_CM_GL_ACTIVITY ns 
-                INNER JOIN ods.CURR_ITEMS ci ON ci.ITEM_ID ::varchar = ns.ITEM_ID::varchar AND ci.FC_ID =2 AND ci.ITEM_TYPE ='Other Charge'
+                INNER JOIN ods.V_CURR_ITEMS_PRD ci ON ci.ITEM_ID ::varchar = ns.ITEM_ID::varchar AND ci.FC_ID =2 AND ci.ITEM_TYPE ='Other Charge'
                 ) and cm.PERIODNAME = '{period}' and ACCOUNTNAME::varchar = '{accountnumber}' and '{tran_sub_type_id}' not in ('219') and tran_allocated = 'N'
                 """,
                  "1a - Netsuite Transaction with Item Level Detatil - Non VFI (Mark Transaction)":
@@ -1042,10 +1190,10 @@ createNSAlloc = {"0 - Netsuite COGS Transactions  With Inventory items":
                 from(
                 SELECT distinct cm.unique_key
                 FROM TM_IGLOO_ODS_STG.ods.NS_CM_GL_ACTIVITY cm
-                LEFT JOIN TM_IGLOO_ODS_STG.ods.CURR_ITEMS ci ON ci.ITEM_ID =cm.ITEM_ID::varchar AND ci.FC_ID =2
+                LEFT JOIN TM_IGLOO_ODS_STG.ods.V_CURR_ITEMS_PRD ci ON ci.ITEM_ID =cm.ITEM_ID::varchar AND ci.FC_ID =2
                 LEFT JOIN (SELECT DISTINCT MONTH_END_DATE,MONTHNAME(month_end_date) || ' ' || SUBSTRING(CALENDARYEARQTR,1,4) AS quartertext FROM TM_IGLOO_ODS_STG.ods.CAL_LU) cl ON cl.quartertext = cm.PERIODNAME 
                 WHERE cm.item_id IS NOT NULL AND cm.item_id NOT IN (SELECT DISTINCT ns.ITEM_ID FROM ods.NS_CM_GL_ACTIVITY ns 
-                INNER JOIN ods.CURR_ITEMS ci ON ci.ITEM_ID ::varchar = ns.ITEM_ID::varchar AND ci.FC_ID =2 AND ci.ITEM_TYPE ='Other Charge'
+                INNER JOIN ods.V_CURR_ITEMS_PRD ci ON ci.ITEM_ID ::varchar = ns.ITEM_ID::varchar AND ci.FC_ID =2 AND ci.ITEM_TYPE ='Other Charge'
                 ) and cm.PERIODNAME = '{period}' and ACCOUNTNAME::varchar = '{accountnumber}' and tran_allocated = 'N') upd
                 where upd.unique_key  = cm.unique_key 
                 """,
@@ -1055,7 +1203,7 @@ createNSAlloc = {"0 - Netsuite COGS Transactions  With Inventory items":
                 # SELECT ACCOUNTNAME,0,cm.unique_key,null,3001,NULL,NULL,trim(SPLIT_PART(cm.SKU,'-',1)),ci.GROUP_ID,ci.GROUP_NAME,ci.ITEM_CATEGORY_ID,ci.ITEM_CATEGORY_NAME,ci.SUBCATEGORY_ID,ci.SUBCATEGORY_NAME,ci.CLASS_ID,ci.CLASS_NAME,ci.SUBCLASS_ID,ci.SUBCLASS_NAME, sysdate() ,cm.amount,1,0,1,cm.amount
                 # ,'{tran_type}','{tran_sub_type}','{tran_sub_type_id}'
                 # FROM TM_IGLOO_ODS_STG.ods.NS_CM_GL_ACTIVITY cm
-                # LEFT JOIN TM_IGLOO_ODS_STG.ods.CURR_ITEMS ci ON ci.item_name = trim(SPLIT_PART(cm.SKU,'-',1))::varchar AND ci.FC_ID =2
+                # LEFT JOIN TM_IGLOO_ODS_STG.ods.V_CURR_ITEMS_PRD ci ON ci.item_name = trim(SPLIT_PART(cm.SKU,'-',1))::varchar AND ci.FC_ID =2
                 # LEFT JOIN (SELECT DISTINCT MONTH_END_DATE,MONTHNAME(month_end_date) || ' ' || SUBSTRING(CALENDARYEARQTR,1,4) AS quartertext FROM TM_IGLOO_ODS_STG.ods.CAL_LU) cl ON cl.quartertext = cm.PERIODNAME 
                 # WHERE cm.item_id IS NOT NULL AND cm.item_id IN (167942,23431,46805,150000,31184,149999,31185,150001,31091,149998) and cm.PERIODNAME = '{period}' and ACCOUNTNAME::varchar = '{accountnumber}' and tran_allocated = 'N'
                 # ""","2a - Netsuite Transaction with Item Level Detatil - VFI(Mark Transaction)":
@@ -1064,7 +1212,7 @@ createNSAlloc = {"0 - Netsuite COGS Transactions  With Inventory items":
                 # set cm.tran_allocated = 'Y'
                 # from(SELECT cm.unique_key
                 # FROM TM_IGLOO_ODS_STG.ods.NS_CM_GL_ACTIVITY cm
-                # LEFT JOIN TM_IGLOO_ODS_STG.ods.CURR_ITEMS ci ON ci.item_name = trim(SPLIT_PART(cm.SKU,'-',1))::varchar AND ci.FC_ID =2
+                # LEFT JOIN TM_IGLOO_ODS_STG.ods.V_CURR_ITEMS_PRD ci ON ci.item_name = trim(SPLIT_PART(cm.SKU,'-',1))::varchar AND ci.FC_ID =2
                 # LEFT JOIN (SELECT DISTINCT MONTH_END_DATE,MONTHNAME(month_end_date) || ' ' || SUBSTRING(CALENDARYEARQTR,1,4) AS quartertext FROM TM_IGLOO_ODS_STG.ods.CAL_LU) cl ON cl.quartertext = cm.PERIODNAME 
                 # WHERE cm.item_id IS NOT NULL AND cm.item_id IN (167942,23431,46805,150000,31184,149999,31185,150001,31091,149998) and cm.PERIODNAME = '{period}' and ACCOUNTNAME::varchar = '{accountnumber}' and tran_allocated = 'N') upd
                 # where upd.unique_key  = cm.unique_key """,
@@ -1081,7 +1229,7 @@ createNSAlloc = {"0 - Netsuite COGS Transactions  With Inventory items":
                 INNER JOIN TM_IGLOO_ODS_STG.ods.GL_ALLOC_DRIVER_DETAIL dd ON dd.rule_id = 601 AND dd.LEVEL1=cm.VENDOR_ID::varchar 
                 LEFT JOIN (SELECT DISTINCT MONTH_END_DATE,MONTHNAME(month_end_date) || ' ' || SUBSTRING(CALENDARYEARQTR,1,4) AS quartertext FROM TM_IGLOO_ODS_STG.ods.CAL_LU) cl ON cl.quartertext = cm.PERIODNAME 
                 INNER JOIN ods.gl_alloc_driver_header gadh ON gadh.id = dd.gah_id
-                left join ods.curr_items ci on ci.item_name = dd.sku and ci.fc_id = 2
+                left join ods.V_CURR_ITEMS_PRD ci on ci.item_name = dd.sku and ci.fc_id = 2
                 WHERE cm.item_id IS NULL AND cm.VENDOR_ID IS NOT NULL AND dd.sku IS NOT NULL  and cm.PERIODNAME = '{period}' and ACCOUNTNAME::varchar = '{accountnumber}' and tran_allocated = 'N' """,
                 "3a - Netsuite Transaction allocated by vendor":
                  """
@@ -1091,7 +1239,7 @@ createNSAlloc = {"0 - Netsuite COGS Transactions  With Inventory items":
                 INNER JOIN TM_IGLOO_ODS_STG.ods.GL_ALLOC_DRIVER_DETAIL dd ON dd.rule_id = 601 AND dd.LEVEL1=cm.VENDOR_ID::varchar 
                 LEFT JOIN (SELECT DISTINCT MONTH_END_DATE,MONTHNAME(month_end_date) || ' ' || SUBSTRING(CALENDARYEARQTR,1,4) AS quartertext FROM TM_IGLOO_ODS_STG.ods.CAL_LU) cl ON cl.quartertext = cm.PERIODNAME 
                 INNER JOIN ods.gl_alloc_driver_header gadh ON gadh.id = dd.gah_id
-                left join ods.curr_items ci on ci.item_name = dd.sku and ci.fc_id = 2
+                left join ods.V_CURR_ITEMS_PRD ci on ci.item_name = dd.sku and ci.fc_id = 2
                 WHERE cm.item_id IS NULL AND cm.VENDOR_ID IS NOT NULL AND dd.sku IS NOT NULL  and cm.PERIODNAME = '{period}' and ACCOUNTNAME::varchar = '{accountnumber}' and tran_allocated = 'N') upd
                 where upd.unique_key  = cm.unique_key """
                 # ,
@@ -1110,7 +1258,7 @@ createNSAlloc = {"0 - Netsuite COGS Transactions  With Inventory items":
                 # INNER JOIN TM_IGLOO_ODS_STG.ods.GL_ALLOC_DRIVER_DETAIL dd ON dd.rule_id = 4000 
                 # LEFT JOIN (SELECT DISTINCT MONTH_END_DATE,MONTHNAME(month_end_date) || ' ' || SUBSTRING(CALENDARYEARQTR,1,4) AS quartertext FROM TM_IGLOO_ODS_STG.ods.CAL_LU) cl ON cl.quartertext = cm.PERIODNAME 
                 # INNER JOIN ods.gl_alloc_driver_header gadh ON gadh.id = dd.gah_id
-                # left join ods.curr_items ci on ci.item_name = dd.sku and ci.fc_id = 2
+                # left join ods.V_CURR_ITEMS_PRD ci on ci.item_name = dd.sku and ci.fc_id = 2
                 # WHERE dd.sku IS NOT NULL  and cm.PERIODNAME = '{period}' and accountnumber in (SELECT DISTINCT accountnumber FROM ods.GL_ALLOCATION_MAP WHERE alloc_rule_id = 4000 )
                 # """
                 }
@@ -1124,19 +1272,19 @@ createNSAlloc = {"0 - Netsuite COGS Transactions  With Inventory items":
 #                         FROM TM_IGLOO_ODS_STG.ods.NS_CM_GL_ACTIVITY_inv
 #                         WHERE item_id IS NOT NULL  AND ITEM_UNIT_PRICE IS NOT null
 #                         ) inv ON inv.transaction_id =cm.TRANSACTION_ID AND cm.ITEM_ID IS NULL
-#                         LEFT JOIN TM_IGLOO_ODS_STG.ods.CURR_ITEMS ci ON ci.ITEM_ID =inv.ITEM_ID::varchar AND ci.FC_ID =2
+#                         LEFT JOIN TM_IGLOO_ODS_STG.ods.V_CURR_ITEMS_PRD ci ON ci.ITEM_ID =inv.ITEM_ID::varchar AND ci.FC_ID =2
 #                         LEFT JOIN (SELECT DISTINCT MONTH_END_DATE,MONTHNAME(month_end_date) || ' ' || SUBSTRING(CALENDARYEARQTR,1,4) AS quartertext FROM TM_IGLOO_ODS_STG.ods.CAL_LU) cl ON cl.quartertext = cm.PERIODNAME 
 #                         WHERE inv.transaction_id IS NOT NULL and ACCOUNTNAME = '{accountnumber}'::varchar and cm.PERIODNAME = '{period}'
 #                         UNION ALL
 #                         SELECT cm.transaction_id,sysdate(),9999,2,cl.month_end_date,trandate,NULL, NULL , ACCOUNTNAME,'NS Allocation',3001,'NS Allocation',ci.ITEM_NAME,cm.amount
 #                         FROM TM_IGLOO_ODS_STG.ods.NS_CM_GL_ACTIVITY cm
-#                         LEFT JOIN TM_IGLOO_ODS_STG.ods.CURR_ITEMS ci ON ci.ITEM_ID =cm.ITEM_ID::varchar AND ci.FC_ID =2
+#                         LEFT JOIN TM_IGLOO_ODS_STG.ods.V_CURR_ITEMS_PRD ci ON ci.ITEM_ID =cm.ITEM_ID::varchar AND ci.FC_ID =2
 #                         LEFT JOIN (SELECT DISTINCT MONTH_END_DATE,MONTHNAME(month_end_date) || ' ' || SUBSTRING(CALENDARYEARQTR,1,4) AS quartertext FROM TM_IGLOO_ODS_STG.ods.CAL_LU) cl ON cl.quartertext = cm.PERIODNAME 
 #                         WHERE cm.item_id IS NOT NULL AND cm.item_id NOT IN (46805,150000,31184,149999,31185,150001,31091,149998) and ACCOUNTNAME = '{accountnumber}'::varchar and cm.PERIODNAME = '{period}'
 #                         UNION ALL
 #                         SELECT cm.transaction_id,sysdate(),9999,2,cl.month_end_date,trandate,NULL, NULL , ACCOUNTNAME,'NS Allocation',3001,'NS Allocation',trim(SPLIT_PART(cm.SKU,'-',1)),cm.amount
 #                         FROM TM_IGLOO_ODS_STG.ods.NS_CM_GL_ACTIVITY cm
-#                         LEFT JOIN TM_IGLOO_ODS_STG.ods.CURR_ITEMS ci ON ci.item_name = trim(SPLIT_PART(cm.SKU,'-',1))::varchar AND ci.FC_ID =2
+#                         LEFT JOIN TM_IGLOO_ODS_STG.ods.V_CURR_ITEMS_PRD ci ON ci.item_name = trim(SPLIT_PART(cm.SKU,'-',1))::varchar AND ci.FC_ID =2
 #                         LEFT JOIN (SELECT DISTINCT MONTH_END_DATE,MONTHNAME(month_end_date) || ' ' || SUBSTRING(CALENDARYEARQTR,1,4) AS quartertext FROM TM_IGLOO_ODS_STG.ods.CAL_LU) cl ON cl.quartertext = cm.PERIODNAME 
 #                         WHERE cm.item_id IS NOT NULL AND cm.item_id IN (46805,150000,31184,149999,31185,150001,31091,149998) and ACCOUNTNAME = '{accountnumber}'::varchar and cm.PERIODNAME = '{period}'
 #                         UNION ALL
@@ -1181,19 +1329,19 @@ createNoSkuAlloc=       {"0 - allocate":
 #                         FROM TM_IGLOO_ODS_STG.ods.NS_CM_GL_ACTIVITY_inv
 #                         WHERE item_id IS NOT NULL  AND ITEM_UNIT_PRICE IS NOT null 
 #                         ) inv ON inv.transaction_id =cm.TRANSACTION_ID AND cm.ITEM_ID IS NULL
-#                         LEFT JOIN TM_IGLOO_ODS_STG.ods.CURR_ITEMS ci ON ci.ITEM_ID =inv.ITEM_ID::varchar AND ci.FC_ID =2
+#                         LEFT JOIN TM_IGLOO_ODS_STG.ods.V_CURR_ITEMS_PRD ci ON ci.ITEM_ID =inv.ITEM_ID::varchar AND ci.FC_ID =2
 #                         LEFT JOIN (SELECT DISTINCT MONTH_END_DATE,MONTHNAME(month_end_date) || ' ' || SUBSTRING(CALENDARYEARQTR,1,4) AS quartertext FROM TM_IGLOO_ODS_STG.ods.CAL_LU) cl ON cl.quartertext = cm.PERIODNAME 
 #                         WHERE inv.transaction_id IS NOT NULL and  ACCOUNTNAME = '{accountnumber}'::varchar and cm.PERIODNAME = '{period}'
 #                         UNION ALL
 #                         SELECT cm.transaction_id,sysdate(),3001,2,cl.month_end_date,trandate,NULL, NULL , ACCOUNTNAME,'NS Allocation',3001,'NS Allocation',ci.ITEM_NAME,cm.amount
 #                         FROM TM_IGLOO_ODS_STG.ods.NS_CM_GL_ACTIVITY cm
-#                         LEFT JOIN TM_IGLOO_ODS_STG.ods.CURR_ITEMS ci ON ci.ITEM_ID =cm.ITEM_ID::varchar AND ci.FC_ID =2
+#                         LEFT JOIN TM_IGLOO_ODS_STG.ods.V_CURR_ITEMS_PRD ci ON ci.ITEM_ID =cm.ITEM_ID::varchar AND ci.FC_ID =2
 #                         LEFT JOIN (SELECT DISTINCT MONTH_END_DATE,MONTHNAME(month_end_date) || ' ' || SUBSTRING(CALENDARYEARQTR,1,4) AS quartertext FROM TM_IGLOO_ODS_STG.ods.CAL_LU) cl ON cl.quartertext = cm.PERIODNAME 
 #                         WHERE cm.item_id IS NOT NULL AND cm.item_id NOT IN (46805,150000,31184,149999,31185,150001,31091,149998) and ACCOUNTNAME = '{accountnumber}'::varchar and cm.PERIODNAME = '{period}'
 #                         UNION ALL
 #                         SELECT cm.transaction_id,sysdate(),3001,2,cl.month_end_date,trandate,NULL, NULL , ACCOUNTNAME,'NS Allocation',3001,'NS Allocation',trim(SPLIT_PART(cm.SKU,'-',1)),cm.amount
 #                         FROM TM_IGLOO_ODS_STG.ods.NS_CM_GL_ACTIVITY cm
-#                         LEFT JOIN TM_IGLOO_ODS_STG.ods.CURR_ITEMS ci ON ci.ITEM_ID =cm.ITEM_ID::varchar AND ci.FC_ID =2
+#                         LEFT JOIN TM_IGLOO_ODS_STG.ods.V_CURR_ITEMS_PRD ci ON ci.ITEM_ID =cm.ITEM_ID::varchar AND ci.FC_ID =2
 #                         LEFT JOIN (SELECT DISTINCT MONTH_END_DATE,MONTHNAME(month_end_date) || ' ' || SUBSTRING(CALENDARYEARQTR,1,4) AS quartertext FROM TM_IGLOO_ODS_STG.ods.CAL_LU) cl ON cl.quartertext = cm.PERIODNAME 
 #                         WHERE cm.item_id IS NOT NULL AND cm.item_id IN (46805,150000,31184,149999,31185,150001,31091,149998) and ACCOUNTNAME = '{accountnumber}'::varchar and cm.PERIODNAME = '{period}'
 #                         UNION ALL
@@ -1213,7 +1361,7 @@ createNoSkuAlloc=       {"0 - allocate":
 #                                   '{tran_type}','{tran_sub_type}','{tran_sub_type_id}' FROM netsuiteallocations na
 #                         LEFT JOIN (SELECT *, accountnumber AS acct_number FROM ods.GL_ALLOCATION_MAP) mp ON '{accountnumber}' = mp.accountnumber::varchar {join}
 #                         inner join ods.gl_alloc_driver_header gah on gah.id = dd.gah_id and gah.rule_id ='{ruleId}' {join2}
-#                         left join ods.curr_items ci on ci.item_name = dd.sku and ci.fc_id = 2 
+#                         left join ods.V_CURR_ITEMS_PRD ci on ci.item_name = dd.sku and ci.fc_id = 2 
 #                     """
 
 createDefaultAlloc ={"0-allocate":"""
@@ -1226,7 +1374,7 @@ createDefaultAlloc ={"0-allocate":"""
                                   '{tran_type}','{tran_sub_type}','{tran_sub_type_id}' FROM ods.NS_CM_GL_ACTIVITY na
                         LEFT JOIN (SELECT *, accountnumber AS acct_number FROM ods.GL_ALLOCATION_MAP) mp ON  mp.accountnumber::varchar = '{accountnumber}'  {join}
                         inner join ods.gl_alloc_driver_header gah on gah.id = dd.gah_id and gah.rule_id ='{ruleId}' {join2}
-                        left join ods.curr_items ci on ci.item_name = dd.sku and ci.fc_id = 2 
+                        left join ods.V_CURR_ITEMS_PRD ci on ci.item_name = dd.sku and ci.fc_id = 2 
                         where na.PERIODNAME = '{period}' and na.ACCOUNTNAME::varchar = '{accountnumber}' and na.tran_allocated ='N'
                     """,
                         "1- update ns allocation table ":"""
@@ -1235,7 +1383,7 @@ createDefaultAlloc ={"0-allocate":"""
                         from(  SELECT distinct unique_key FROM ods.NS_CM_GL_ACTIVITY na
                         LEFT JOIN (SELECT *, accountnumber AS acct_number FROM ods.GL_ALLOCATION_MAP) mp ON mp.accountnumber::varchar = '{accountnumber}'  {join}
                         inner join ods.gl_alloc_driver_header gah on gah.id = dd.gah_id and gah.rule_id ='{ruleId}' {join2}
-                        left join ods.curr_items ci on ci.item_name = dd.sku and ci.fc_id = 2 
+                        left join ods.V_CURR_ITEMS_PRD ci on ci.item_name = dd.sku and ci.fc_id = 2 
                         where na.PERIODNAME = '{period}' and na.ACCOUNTNAME::varchar = '{accountnumber}' and na.tran_allocated ='N' ) upd
                         where upd.unique_key  = cm.unique_key
                         """}
@@ -1248,7 +1396,7 @@ createDefaultNoSkuAlloc ={"0 - allocate":"""
                                   '{tran_type}','{tran_sub_type}','{tran_sub_type_id}' FROM ods.ns_cm_gl_activity na
                         LEFT JOIN (SELECT *, accountnumber AS acct_number FROM ods.GL_ALLOCATION_MAP) mp ON '{accountnumber}' = mp.accountnumber::varchar {join}
                         left join ods.gl_alloc_driver_header gah on gah.id = dd.gah_id and gah.rule_id ='{ruleId}' {join2}
-                        left join ods.curr_items ci on ci.item_name = dd.sku and ci.fc_id = 2 
+                        left join ods.V_CURR_ITEMS_PRD ci on ci.item_name = dd.sku and ci.fc_id = 2 
                         where gah.id is null and na.PERIODNAME = '{period}' and na.ACCOUNTNAME::varchar = '{accountnumber}' and na.tran_allocated ='N'
                     """,
                     "1- update ns allocation table ":"""
@@ -1257,7 +1405,7 @@ createDefaultNoSkuAlloc ={"0 - allocate":"""
                         from(  SELECT distinct unique_key FROM ods.ns_cm_gl_activity na
                         LEFT JOIN (SELECT *, accountnumber AS acct_number FROM ods.GL_ALLOCATION_MAP) mp ON '{accountnumber}' = mp.accountnumber::varchar {join}
                         left join ods.gl_alloc_driver_header gah on gah.id = dd.gah_id and gah.rule_id ='{ruleId}' {join2}
-                        left join ods.curr_items ci on ci.item_name = dd.sku and ci.fc_id = 2 
+                        left join ods.V_CURR_ITEMS_PRD ci on ci.item_name = dd.sku and ci.fc_id = 2 
                         where gah.id is null and na.PERIODNAME = '{period}' and na.ACCOUNTNAME::varchar = '{accountnumber}' and na.tran_allocated ='N') upd
                         where upd.unique_key  = cm.unique_key"""}
 
@@ -1272,19 +1420,19 @@ createDefaultNoSkuAlloc ={"0 - allocate":"""
 #                         FROM TM_IGLOO_ODS_STG.ods.NS_CM_GL_ACTIVITY_inv
 #                         WHERE item_id IS NOT NULL  AND ITEM_UNIT_PRICE IS NOT null 
 #                         ) inv ON inv.transaction_id =cm.TRANSACTION_ID AND cm.ITEM_ID IS NULL
-#                         LEFT JOIN TM_IGLOO_ODS_STG.ods.CURR_ITEMS ci ON ci.ITEM_ID =inv.ITEM_ID::varchar AND ci.FC_ID =2
+#                         LEFT JOIN TM_IGLOO_ODS_STG.ods.V_CURR_ITEMS_PRD ci ON ci.ITEM_ID =inv.ITEM_ID::varchar AND ci.FC_ID =2
 #                         LEFT JOIN (SELECT DISTINCT MONTH_END_DATE,MONTHNAME(month_end_date) || ' ' || SUBSTRING(CALENDARYEARQTR,1,4) AS quartertext FROM TM_IGLOO_ODS_STG.ods.CAL_LU) cl ON cl.quartertext = cm.PERIODNAME 
 #                         WHERE inv.transaction_id IS NOT NULL and  ACCOUNTNAME = '{accountnumber}'::varchar and cm.PERIODNAME = '{period}'
 #                         UNION ALL
 #                         SELECT cm.transaction_id,sysdate(),3001,2,cl.month_end_date,trandate,NULL, NULL , ACCOUNTNAME,'NS Allocation',3001,'NS Allocation',ci.ITEM_NAME,cm.amount
 #                         FROM TM_IGLOO_ODS_STG.ods.NS_CM_GL_ACTIVITY cm
-#                         LEFT JOIN TM_IGLOO_ODS_STG.ods.CURR_ITEMS ci ON ci.ITEM_ID =cm.ITEM_ID::varchar AND ci.FC_ID =2
+#                         LEFT JOIN TM_IGLOO_ODS_STG.ods.V_CURR_ITEMS_PRD ci ON ci.ITEM_ID =cm.ITEM_ID::varchar AND ci.FC_ID =2
 #                         LEFT JOIN (SELECT DISTINCT MONTH_END_DATE,MONTHNAME(month_end_date) || ' ' || SUBSTRING(CALENDARYEARQTR,1,4) AS quartertext FROM TM_IGLOO_ODS_STG.ods.CAL_LU) cl ON cl.quartertext = cm.PERIODNAME 
 #                         WHERE cm.item_id IS NOT NULL AND cm.item_id NOT IN (46805,150000,31184,149999,31185,150001,31091,149998) and ACCOUNTNAME = '{accountnumber}'::varchar and cm.PERIODNAME = '{period}'
 #                         UNION ALL
 #                         SELECT cm.transaction_id,sysdate(),3001,2,cl.month_end_date,trandate,NULL, NULL , ACCOUNTNAME,'NS Allocation',3001,'NS Allocation',trim(SPLIT_PART(cm.SKU,'-',1)),cm.amount
 #                         FROM TM_IGLOO_ODS_STG.ods.NS_CM_GL_ACTIVITY cm
-#                         LEFT JOIN TM_IGLOO_ODS_STG.ods.CURR_ITEMS ci ON ci.ITEM_ID =cm.ITEM_ID::varchar AND ci.FC_ID =2
+#                         LEFT JOIN TM_IGLOO_ODS_STG.ods.V_CURR_ITEMS_PRD ci ON ci.ITEM_ID =cm.ITEM_ID::varchar AND ci.FC_ID =2
 #                         LEFT JOIN (SELECT DISTINCT MONTH_END_DATE,MONTHNAME(month_end_date) || ' ' || SUBSTRING(CALENDARYEARQTR,1,4) AS quartertext FROM TM_IGLOO_ODS_STG.ods.CAL_LU) cl ON cl.quartertext = cm.PERIODNAME 
 #                         WHERE cm.item_id IS NOT NULL AND cm.item_id IN (46805,150000,31184,149999,31185,150001,31091,149998) and ACCOUNTNAME = '{accountnumber}'::varchar and cm.PERIODNAME = '{period}'
 #                         UNION ALL
@@ -1302,7 +1450,7 @@ createDefaultNoSkuAlloc ={"0 - allocate":"""
 #                                   '{tran_type}','{tran_sub_type}','{tran_sub_type_id}' FROM netsuiteallocations na
 #                         LEFT JOIN (SELECT *, accountnumber AS acct_number FROM ods.GL_ALLOCATION_MAP) mp ON '{accountnumber}' = mp.accountnumber::varchar {join}
 #                         left join ods.gl_alloc_driver_header gah on gah.id = dd.gah_id and gah.rule_id ='{ruleId}' {join2}
-#                         left join ods.curr_items ci on ci.item_name = dd.sku and ci.fc_id = 2 
+#                         left join ods.V_CURR_ITEMS_PRD ci on ci.item_name = dd.sku and ci.fc_id = 2 
 #                         where gah.id is null
 #                     """
 
@@ -1315,19 +1463,19 @@ createDefaultNoSkuAlloc ={"0 - allocate":"""
 #                         FROM TM_IGLOO_ODS_STG.ods.NS_CM_GL_ACTIVITY_inv
 #                         WHERE item_id IS NOT NULL  AND ITEM_UNIT_PRICE IS NOT null 
 #                         ) inv ON inv.transaction_id =cm.TRANSACTION_ID AND cm.ITEM_ID IS NULL
-#                         LEFT JOIN TM_IGLOO_ODS_STG.ods.CURR_ITEMS ci ON ci.ITEM_ID =inv.ITEM_ID::varchar AND ci.FC_ID =2
+#                         LEFT JOIN TM_IGLOO_ODS_STG.ods.V_CURR_ITEMS_PRD ci ON ci.ITEM_ID =inv.ITEM_ID::varchar AND ci.FC_ID =2
 #                         LEFT JOIN (SELECT DISTINCT MONTH_END_DATE,MONTHNAME(month_end_date) || ' ' || SUBSTRING(CALENDARYEARQTR,1,4) AS quartertext FROM TM_IGLOO_ODS_STG.ods.CAL_LU) cl ON cl.quartertext = cm.PERIODNAME 
 #                         WHERE inv.transaction_id IS NOT NULL and  ACCOUNTNAME =  '{accountnumber}'::varchar and cm.PERIODNAME ='{period}'
 #                         UNION ALL
 #                         SELECT cm.transaction_id,sysdate(),3001,2,cl.month_end_date,trandate,NULL, NULL , ACCOUNTNAME,'NS Allocation',3001,'NS Allocation',ci.ITEM_NAME,cm.amount
 #                         FROM TM_IGLOO_ODS_STG.ods.NS_CM_GL_ACTIVITY cm
-#                         LEFT JOIN TM_IGLOO_ODS_STG.ods.CURR_ITEMS ci ON ci.ITEM_ID =cm.ITEM_ID::varchar AND ci.FC_ID =2
+#                         LEFT JOIN TM_IGLOO_ODS_STG.ods.V_CURR_ITEMS_PRD ci ON ci.ITEM_ID =cm.ITEM_ID::varchar AND ci.FC_ID =2
 #                         LEFT JOIN (SELECT DISTINCT MONTH_END_DATE,MONTHNAME(month_end_date) || ' ' || SUBSTRING(CALENDARYEARQTR,1,4) AS quartertext FROM TM_IGLOO_ODS_STG.ods.CAL_LU) cl ON cl.quartertext = cm.PERIODNAME 
 #                         WHERE cm.item_id IS NOT NULL AND cm.item_id NOT IN (46805,150000,31184,149999,31185,150001,31091,149998) and ACCOUNTNAME =  '{accountnumber}'::varchar and cm.PERIODNAME = '{period}'
 #                         UNION ALL
 #                         SELECT cm.transaction_id,sysdate(),3001,2,cl.month_end_date,trandate,NULL, NULL , ACCOUNTNAME,'NS Allocation',3001,'NS Allocation',trim(SPLIT_PART(cm.SKU,'-',1)),cm.amount
 #                         FROM TM_IGLOO_ODS_STG.ods.NS_CM_GL_ACTIVITY cm
-#                         LEFT JOIN TM_IGLOO_ODS_STG.ods.CURR_ITEMS ci ON ci.ITEM_ID =cm.ITEM_ID::varchar AND ci.FC_ID =2
+#                         LEFT JOIN TM_IGLOO_ODS_STG.ods.V_CURR_ITEMS_PRD ci ON ci.ITEM_ID =cm.ITEM_ID::varchar AND ci.FC_ID =2
 #                         LEFT JOIN (SELECT DISTINCT MONTH_END_DATE,MONTHNAME(month_end_date) || ' ' || SUBSTRING(CALENDARYEARQTR,1,4) AS quartertext FROM TM_IGLOO_ODS_STG.ods.CAL_LU) cl ON cl.quartertext = cm.PERIODNAME 
 #                         WHERE cm.item_id IS NOT NULL AND cm.item_id IN (46805,150000,31184,149999,31185,150001,31091,149998) and ACCOUNTNAME =  '{accountnumber}'::varchar and cm.PERIODNAME = '{period}'
 #                         UNION ALL
@@ -1350,7 +1498,7 @@ createDefaultNoSkuAlloc ={"0 - allocate":"""
 #                                   '{tran_type}','{tran_sub_type}','{tran_sub_type_id}' FROM test 
 #                         LEFT JOIN ods.GL_ALLOC_DRIVER_DETAIL dd ON dd.rule_id ='{ruleId}' 
 #                         inner join ods.gl_alloc_driver_header gah on gah.id = dd.gah_id and gah.rule_id ='{ruleId}' 
-#                         left join ods.curr_items ci on ci.item_name = dd.sku and ci.fc_id = 2 
+#                         left join ods.V_CURR_ITEMS_PRD ci on ci.item_name = dd.sku and ci.fc_id = 2 
 #                     """
 
 createDefaultAccountAlloc ={"0 - allocate":"""
@@ -1359,7 +1507,7 @@ createDefaultAccountAlloc ={"0 - allocate":"""
                         SELECT ACCOUNTNAME, sum(amount) AS ns_amt FROM ods.ns_cm_gl_activity na
                                       WHERE  na.PERIODNAME = '{period}' and na.ACCOUNTNAME::varchar = '{accountnumber}' and na.tran_allocated ='N'
                                       GROUP BY ACCOUNTNAME)
-                        SELECT  ACCOUNTNAME,ns_amt,NULL AS unique_key,GAH_ID,{ruleId},dd.LEVEL1,dd.LEVEL2,dd.sku,ci.GROUP_ID,ci.GROUP_NAME,ci.ITEM_CATEGORY_ID,ci.ITEM_CATEGORY_NAME,ci.SUBCATEGORY_ID,ci.SUBCATEGORY_NAME,ci.CLASS_ID,ci.CLASS_NAME,ci.SUBCLASS_ID,ci.SUBCLASS_NAME
+                        SELECT  ACCOUNTNAME,ns_amt,row_number() over (partition by level1_name order by level1_name) AS unique_key,GAH_ID,{ruleId},dd.LEVEL1,dd.LEVEL2,dd.sku,ci.GROUP_ID,ci.GROUP_NAME,ci.ITEM_CATEGORY_ID,ci.ITEM_CATEGORY_NAME,ci.SUBCATEGORY_ID,ci.SUBCATEGORY_NAME,ci.CLASS_ID,ci.CLASS_NAME,ci.SUBCLASS_ID,ci.SUBCLASS_NAME
                         ,sysdate(),SKU_AMT,ALLOC_PCT,SKU_QTY,QTY_ALLOC_PCT,
                         case 
                                 when gah.total_amt <>0 THEN ns_amt * alloc_pct
@@ -1367,7 +1515,7 @@ createDefaultAccountAlloc ={"0 - allocate":"""
                                   '{tran_type}','{tran_sub_type}','{tran_sub_type_id}' FROM test 
                                   LEFT JOIN (SELECT *, accountnumber AS acct_number FROM ods.GL_ALLOCATION_MAP) mp ON '{accountnumber}' = mp.accountnumber::varchar {join}
                         inner join ods.gl_alloc_driver_header gah on gah.id = dd.gah_id and gah.rule_id ='{ruleId}'  {join2}
-                        left join ods.curr_items ci on ci.item_name = dd.sku and ci.fc_id = 2 
+                        left join ods.V_CURR_ITEMS_PRD ci on ci.item_name = dd.sku and ci.fc_id = 2 
                     """,
                         
                         "1- update ns allocation table ":"""
@@ -1380,7 +1528,7 @@ createDefaultAccountAlloc ={"0 - allocate":"""
                         SELECT  distinct unique_key FROM test 
                         LEFT JOIN ods.GL_ALLOC_DRIVER_DETAIL dd ON dd.rule_id ='{ruleId}' 
                         inner join ods.gl_alloc_driver_header gah on gah.id = dd.gah_id and gah.rule_id ='{ruleId}' 
-                        left join ods.curr_items ci on ci.item_name = dd.sku and ci.fc_id = 2 ) upd
+                        left join ods.V_CURR_ITEMS_PRD ci on ci.item_name = dd.sku and ci.fc_id = 2 ) upd
                         where upd.unique_key  = cm.unique_key"""
                     }
 
@@ -1390,13 +1538,13 @@ createDefaultNoSkuAccountAlloc ={"0 -allocate" :"""
                         SELECT ACCOUNTNAME, sum(amount) AS ns_amt FROM ods.ns_cm_gl_activity na
                                       WHERE na.PERIODNAME = '{period}' and na.ACCOUNTNAME::varchar = '{accountnumber}' and na.tran_allocated ='N'
                                       GROUP BY ACCOUNTNAME)
-                        SELECT  ACCOUNTNAME,ns_amt,NULL AS unique_key,GAH_ID,{ruleId},dd.LEVEL1,dd.LEVEL2,'GL Activity',ci.GROUP_ID,ci.GROUP_NAME,ci.ITEM_CATEGORY_ID,ci.ITEM_CATEGORY_NAME,ci.SUBCATEGORY_ID,ci.SUBCATEGORY_NAME,ci.CLASS_ID,ci.CLASS_NAME,ci.SUBCLASS_ID,ci.SUBCLASS_NAME
+                        SELECT  ACCOUNTNAME,ns_amt,row_number() over (partition by level1_name order by level1_name) AS unique_key,GAH_ID,{ruleId},dd.LEVEL1,dd.LEVEL2,'GL Activity',ci.GROUP_ID,ci.GROUP_NAME,ci.ITEM_CATEGORY_ID,ci.ITEM_CATEGORY_NAME,ci.SUBCATEGORY_ID,ci.SUBCATEGORY_NAME,ci.CLASS_ID,ci.CLASS_NAME,ci.SUBCLASS_ID,ci.SUBCLASS_NAME
                         ,sysdate(),SKU_AMT,ALLOC_PCT,SKU_QTY,QTY_ALLOC_PCT,
                         ns_amt AS allocated_amt,
                                   '{tran_type}','{tran_sub_type}','{tran_sub_type_id}' FROM test 
                         LEFT JOIN (SELECT *, accountnumber AS acct_number FROM ods.GL_ALLOCATION_MAP) mp ON '{accountnumber}' = mp.accountnumber::varchar {join}          
                         left join ods.gl_alloc_driver_header gah on gah.id = dd.gah_id and gah.rule_id ='{ruleId}' 
-                        left join ods.curr_items ci on ci.item_name = dd.sku and ci.fc_id = 2 
+                        left join ods.V_CURR_ITEMS_PRD ci on ci.item_name = dd.sku and ci.fc_id = 2 
                         where gah.id is null 
                     """,
                         "1- update ns allocation table ":"""
@@ -1409,7 +1557,7 @@ createDefaultNoSkuAccountAlloc ={"0 -allocate" :"""
                         SELECT distinct unique_key FROM test 
                         LEFT JOIN ods.GL_ALLOC_DRIVER_DETAIL dd ON dd.rule_id ='{ruleId}' 
                         left join ods.gl_alloc_driver_header gah on gah.id = dd.gah_id and gah.rule_id ='{ruleId}' 
-                        left join ods.curr_items ci on ci.item_name = dd.sku and ci.fc_id = 2 
+                        left join ods.V_CURR_ITEMS_PRD ci on ci.item_name = dd.sku and ci.fc_id = 2 
                         where gah.id is null ) upd
                         where upd.unique_key  = cm.unique_key"""
                     }
@@ -1424,19 +1572,19 @@ createDefaultNoSkuAccountAlloc ={"0 -allocate" :"""
 #                         FROM TM_IGLOO_ODS_STG.ods.NS_CM_GL_ACTIVITY_inv
 #                         WHERE item_id IS NOT NULL  AND ITEM_UNIT_PRICE IS NOT null 
 #                         ) inv ON inv.transaction_id =cm.TRANSACTION_ID AND cm.ITEM_ID IS NULL
-#                         LEFT JOIN TM_IGLOO_ODS_STG.ods.CURR_ITEMS ci ON ci.ITEM_ID =inv.ITEM_ID::varchar AND ci.FC_ID =2
+#                         LEFT JOIN TM_IGLOO_ODS_STG.ods.V_CURR_ITEMS_PRD ci ON ci.ITEM_ID =inv.ITEM_ID::varchar AND ci.FC_ID =2
 #                         LEFT JOIN (SELECT DISTINCT MONTH_END_DATE,MONTHNAME(month_end_date) || ' ' || SUBSTRING(CALENDARYEARQTR,1,4) AS quartertext FROM TM_IGLOO_ODS_STG.ods.CAL_LU) cl ON cl.quartertext = cm.PERIODNAME 
 #                         WHERE inv.transaction_id IS NOT NULL and  ACCOUNTNAME =  '{accountnumber}'::varchar and cm.PERIODNAME ='{period}'
 #                         UNION ALL
 #                         SELECT cm.transaction_id,sysdate(),3001,2,cl.month_end_date,trandate,NULL, NULL , ACCOUNTNAME,'NS Allocation',3001,'NS Allocation',ci.ITEM_NAME,cm.amount
 #                         FROM TM_IGLOO_ODS_STG.ods.NS_CM_GL_ACTIVITY cm
-#                         LEFT JOIN TM_IGLOO_ODS_STG.ods.CURR_ITEMS ci ON ci.ITEM_ID =cm.ITEM_ID::varchar AND ci.FC_ID =2
+#                         LEFT JOIN TM_IGLOO_ODS_STG.ods.V_CURR_ITEMS_PRD ci ON ci.ITEM_ID =cm.ITEM_ID::varchar AND ci.FC_ID =2
 #                         LEFT JOIN (SELECT DISTINCT MONTH_END_DATE,MONTHNAME(month_end_date) || ' ' || SUBSTRING(CALENDARYEARQTR,1,4) AS quartertext FROM TM_IGLOO_ODS_STG.ods.CAL_LU) cl ON cl.quartertext = cm.PERIODNAME 
 #                         WHERE cm.item_id IS NOT NULL AND cm.item_id NOT IN (46805,150000,31184,149999,31185,150001,31091,149998) and ACCOUNTNAME =  '{accountnumber}'::varchar and cm.PERIODNAME = '{period}'
 #                         UNION ALL
 #                         SELECT cm.transaction_id,sysdate(),3001,2,cl.month_end_date,trandate,NULL, NULL , ACCOUNTNAME,'NS Allocation',3001,'NS Allocation',trim(SPLIT_PART(cm.SKU,'-',1)),cm.amount
 #                         FROM TM_IGLOO_ODS_STG.ods.NS_CM_GL_ACTIVITY cm
-#                         LEFT JOIN TM_IGLOO_ODS_STG.ods.CURR_ITEMS ci ON ci.ITEM_ID =cm.ITEM_ID::varchar AND ci.FC_ID =2
+#                         LEFT JOIN TM_IGLOO_ODS_STG.ods.V_CURR_ITEMS_PRD ci ON ci.ITEM_ID =cm.ITEM_ID::varchar AND ci.FC_ID =2
 #                         LEFT JOIN (SELECT DISTINCT MONTH_END_DATE,MONTHNAME(month_end_date) || ' ' || SUBSTRING(CALENDARYEARQTR,1,4) AS quartertext FROM TM_IGLOO_ODS_STG.ods.CAL_LU) cl ON cl.quartertext = cm.PERIODNAME 
 #                         WHERE cm.item_id IS NOT NULL AND cm.item_id IN (46805,150000,31184,149999,31185,150001,31091,149998) and ACCOUNTNAME =  '{accountnumber}'::varchar and cm.PERIODNAME = '{period}'
 #                         UNION ALL
@@ -1457,7 +1605,7 @@ createDefaultNoSkuAccountAlloc ={"0 -allocate" :"""
 #                                   '{tran_type}','{tran_sub_type}','{tran_sub_type_id}' FROM test 
 #                         LEFT JOIN ods.GL_ALLOC_DRIVER_DETAIL dd ON dd.rule_id ='{ruleId}' 
 #                         left join ods.gl_alloc_driver_header gah on gah.id = dd.gah_id and gah.rule_id ='{ruleId}' 
-#                         left join ods.curr_items ci on ci.item_name = dd.sku and ci.fc_id = 2 
+#                         left join ods.V_CURR_ITEMS_PRD ci on ci.item_name = dd.sku and ci.fc_id = 2 
 #                         where gah.id is null 
 #                     """
 # createNSOob = """
@@ -1509,10 +1657,38 @@ updateNSAlloc = """
                                 INNER JOIN (SELECT  accountname, sum(amount) AS netsuite_amt FROM ods.NS_CM_GL_ACTIVITY WHERE periodname = '{period}'
                     			GROUP BY accountname) dh ON  dh.accountname::varchar = tab.accountnumber::varchar
                    				 where  tab.accountnumber::varchar = '{nsaccount}' and tab.allocated_amt <> 0 and tab.period_end_date = '{endDate}' ) det
-                                INNER JOIN ods.oobb ON rn<abs(oobb.total_var *100) AND oobb.accountnumber = det.accountnumber
+                                INNER JOIN ods.oobb ON rn<=abs(oobb.total_var *100) AND oobb.accountnumber = det.accountnumber
                                  ) upd
                                  WHERE ns_alloc.ID =upd.id AND ns_alloc.SKU =upd.sku AND ns_alloc.ACCOUNTNUMBER = upd.accountnumber and ns_alloc.accountnumber ='{nsaccount}' 
                                     """
+
+# createNSOobSec = """
+
+#                 CREATE or REPLACE TEMP TABLE ods.oobb as
+#                      SELECT accountnumber,sum(total_var) AS total_var FROM (SELECT accountnumber,netsuite_amt, sum(allocated_amt) ,netsuite_amt- sum(allocated_amt) AS total_var
+#                     FROM ods.ns_alloc ns 
+#                     INNER JOIN (SELECT  accountname, sum(amount) AS netsuite_amt FROM ods.NS_CM_GL_ACTIVITY WHERE periodname = '{period}'
+#                     GROUP BY accountname) dh ON dh.accountname::varchar = ns.accountnumber::varchar
+#                     where  ns.accountnumber::varchar = '{nsaccount}' and ns.period_end_date = '{endDate}'
+#                     GROUP BY accountnumber,netsuite_amt) GROUP BY accountnumber       
+     
+#                     """
+
+# updateNSAllocSec = """
+#                 update ods.ns_alloc
+#                 set allocated_amt = new_alloc_amt
+#                 FROM(
+#                 select det.ACCOUNTNUMBER ,det.sku, det.allocated_amt + case when total_var > 0 then .01 else -.01 end as new_alloc_amt, det.allocated_amt FROM(select id,ACCOUNTNUMBER ,sku, allocated_amt,
+#                                 row_number() OVER  (PARTITION by accountnumber order by allocated_amt desc) as rn
+#                                 from  ods.ns_alloc tab
+#                                 INNER JOIN (SELECT  accountname, sum(amount) AS netsuite_amt FROM ods.NS_CM_GL_ACTIVITY WHERE periodname = '{period}'
+#                     			GROUP BY accountname) dh ON  dh.accountname::varchar = tab.accountnumber::varchar
+#                    				 where  tab.accountnumber::varchar = '{nsaccount}' and tab.allocated_amt <> 0 and tab.period_end_date = '{endDate}' ) det
+#                                 INNER JOIN ods.oobb ON rn<=abs(oobb.total_var *100) AND oobb.accountnumber = det.accountnumber
+#                                  ) upd
+#                                  WHERE  ns_alloc.SKU =upd.sku AND ns_alloc.ACCOUNTNUMBER = upd.accountnumber and ns_alloc.accountnumber ='{nsaccount}' 
+#                                     """
+
 
 insertNSToGlAllocation = """
                     INSERT into ods.gl_allocation_test(CREATED_AT,RULE_ID,RUN_ID,TRAN_DATE,SALE_DATE,LOCATION_ID,GL_PRODUCT_CATEGORY,ACCT_NUMEBR,GROUP_CODE,TRAN_TYPE,TRAN_SUB_TYPE_ID,TRAN_SUB_TYPE,SKU
