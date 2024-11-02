@@ -8,7 +8,7 @@ import genGLAllocationDriversSqlPRD as glSql
 ALERT_MESSAGE = "Daily load seems to have failed. WARNING: Updates for this run will be delayed."
 ENV = "PRODUCTION" if Variable.get("AIRFLOW_ENV", default_var="stg") == "prd" else "STAGING"
 
-DAG_START_DATE = datetime(2024,7, 1)
+DAG_START_DATE = datetime(2024,8, 1)
 
 default_args = {
     'owner': 'Trenton Watkins',
