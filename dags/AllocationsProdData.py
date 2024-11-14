@@ -3,7 +3,7 @@ from airflow.operators.python_operator import PythonOperator
 from airflow.models import Variable
 from datetime import datetime, timedelta
 from db_util import db_connect
-import genGLAllocationDriversSqlPRD as glSql
+import allocanrun as glSql
 
 ALERT_MESSAGE = "Daily load seems to have failed. WARNING: Updates for this run will be delayed."
 ENV = "PRODUCTION" if Variable.get("AIRFLOW_ENV", default_var="stg") == "prd" else "STAGING"
@@ -168,20 +168,28 @@ def processNSAllocations(rowCn, runid, periodStartDate, periodEndDate,periodname
     trantype = rowCn.tran_type
     nstran = rowCn.ns_trans_allocation
 
-    print(f"Allocating Account Number : {nsaccount} using allocation rule: {ruleId} with default {default}")
+    print(f"Allocating Account Number : {nsaccount} using allocation rule: {ruleId} with default {default} on location : {location}")
     
     joinfilter =''
     joinclause =''
     filter2=''
+    locationclause=''
     if category is not None:
         joinfilter += f"AND dd.LEVEL1 =  mp.category  "
     
-    if ruleId ==501:
+    if location is not None:
+        joinfilter += f"AND dd.LEVEL1 = {location}"
+        filter2 = f"AND gah.LEVEL1_name = {location}"
+        joinclause += f"and mp.location = {location}"
+        locationclause +=f"and na.location_id = {location}"
+
+    if ruleId in [501,502]:
         joinfilter += f"AND dd.LEVEL1::varchar = coalesce(na.department_id,22)::varchar"
         filter2 += f""" and coalesce(na.department_id,22)::varchar = gah.level1_name::varchar"""
         # joinclause += """left join(select distinct location_ic as fc_id , dept_id from ods.GL_DEPARTMENT_XREF) fcr on fcr.dept_id = na.department_id  """
         print(joinfilter)
         print(filter2)
+        
 
     if accountmap is not None:
         joinclause += f"""           
@@ -216,7 +224,7 @@ def processNSAllocations(rowCn, runid, periodStartDate, periodEndDate,periodname
             print('Running createDefaultAlloc')  
             for key, query in glSql.createDefaultAlloc.items(): 
 
-                sql = query.format(join2 = filter2,join = joinclause,ruleId=ruleId,tran_type = trantype ,tran_sub_type_id = transubtypeid,tran_sub_type = transubtype, accountmap = accountmap , accountnumber= nsaccount,  period = periodname)
+                sql = query.format(locjoin = locationclause ,join2 = filter2,join = joinclause,ruleId=ruleId,tran_type = trantype ,tran_sub_type_id = transubtypeid,tran_sub_type = transubtype, accountmap = accountmap , accountnumber= nsaccount,  period = periodname)
                 print(sql)
                 writeConn.db_execute(sql)
 
