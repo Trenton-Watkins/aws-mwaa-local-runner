@@ -92,6 +92,20 @@ insertAllHeader = """
                 AND TRAN_TYPE = {tranType} AND TRAN_SUB_TYPE_ID = {tranSubType}
                 GROUP BY period_end_date 
                 """
+
+
+insertOwnHeader = """
+                INSERT INTO ods.gl_alloc_driver_header(rule_id, period_end_date, level1 , level1_name , level2, level2_name, created_at, total_amt,total_qty)
+                SELECT {ruleId} AS rule_id, '{endDate}' AS period_end_date, 'vendor' AS level1, 
+                CASE WHEN ci.brand_id IN (2498,2762,2862,1663,2763,2765) THEN 'Owned Brand' ELSE 'Branded' end AS level1_name, null as level2, null as level2_name, SYSDATE() AS created_at, 
+                sum(trn.{tranColumn})  AS total_amt ,sum(trn.tran_qty) as total_qty
+                FROM ods.transactions trn
+                LEFT OUTER JOIN ods.NS_FC_XREF fc ON fc.NS_FC_ID = trn.LOCATION_ID 
+                LEFT OUTER JOIN ods.curr_items ci ON trn.sku  = ci.item_name  AND COALESCE(fc.ODS_FC_ID,2) = ci.fc_id 
+                        WHERE trn.tran_gl_date between '{startDate}' and '{endDate}'
+                AND TRAN_TYPE = {tranType} AND TRAN_SUB_TYPE_ID = {tranSubType}
+                GROUP BY period_end_date,level1_name
+                """                
 insertVfiTprHeader = """
                 INSERT INTO ods.gl_alloc_driver_header(rule_id, period_end_date, level1 , level1_name , level2, level2_name, created_at, total_amt,total_qty)
                 SELECT {ruleId} AS rule_id, '{endDate}' AS period_end_date, '{rule}' AS level1, 
@@ -188,6 +202,19 @@ insertDeptHeader = """
                     AND TRAN_TYPE = {tranType} AND TRAN_SUB_TYPE_ID = {tranSubType}
                     GROUP BY period_end_date, dp.dept_id
                     """
+
+insertDeptUnitsHeader = """
+                    INSERT INTO ods.gl_alloc_driver_header(rule_id, period_end_date, level1 , level1_name , level2, level2_name, created_at, total_amt,total_qty)
+                    SELECT {ruleId} AS rule_id, '{endDate}' AS period_end_date, 'department' as level1,
+                    dp.dept_id AS level1_name, null as level2, null as level2_name, SYSDATE() AS created_at, 
+                    sum(trn.{tranColumn})  AS total_amt ,sum(trn.tran_qty) as total_qty
+                    FROM ods.transactions trn
+                    INNER JOIN ods.GL_DEPARTMENT_XREF dp ON dp.LOCATION_ID =trn.location_id AND dp.GROUP_ID = trn.group_id
+                    WHERE trn.tran_gl_date between '{startDate}' and '{endDate}'
+                    AND TRAN_TYPE = {tranType} AND TRAN_SUB_TYPE_ID = {tranSubType}
+                    GROUP BY period_end_date, dp.dept_id
+                    """     
+
 insertCatHeader = """
                     INSERT INTO ods.gl_alloc_driver_header(rule_id, period_end_date, level1 , level1_name , level2, level2_name, created_at, total_amt,total_qty)
                     SELECT {ruleId} AS rule_id,  '{endDate}' AS period_end_date, 'category' as level1,
@@ -449,6 +476,23 @@ insertAllDetail = """
                     GROUP BY  gadh.id, gadh.rule_id, gadh.LEVEL1_NAME, gadh.LEVEL2_NAME, trn.sku,  gadh.total_amt,gadh.total_qty
                     """
 
+
+
+insertOwnDetail = """
+                    INSERT INTO ods.gl_alloc_driver_detail(gah_id, rule_id, level1, level2, sku, created_at, sku_amt, sku_qty, alloc_pct,qty_alloc_pct)
+                    SELECT   gadh.id, gadh.rule_id, gadh.LEVEL1_NAME, gadh.LEVEL2_NAME, sku, 
+                    SYSDATE() AS created_at, sum(trn.{tranColumn}) AS sku_amt,sum(trn.tran_qty) as sku_qty,
+                    case when coalesce(gadh.total_amt, 0) <> 0 then sku_amt/gadh.total_amt else 0 end AS alloc_pct,
+                    case when coalesce(gadh.total_qty, 0) <> 0 then sku_qty/gadh.total_qty else 0 end AS qty_alloc_pct
+                    FROM ods.transactions trn
+                    LEFT OUTER JOIN ods.NS_FC_XREF fc ON fc.NS_FC_ID = trn.LOCATION_ID 
+                        LEFT OUTER JOIN (select *,CASE WHEN brand_id IN (2498,2762,2862,1663,2763,2765) THEN 'Owned Brand' ELSE 'Branded' end as branded from ods.curr_items) ci ON trn.sku  = ci.item_name  AND COALESCE(fc.ODS_FC_ID,2) = ci.fc_id  
+                    INNER JOIN ods.gl_alloc_driver_header gadh ON ci.branded::varchar(100) = gadh.level1_name AND {ruleId} = gadh.rule_id 
+                    WHERE trn.tran_gl_date between '{startDate}' and '{endDate}'
+                    AND TRAN_TYPE = {tranType} AND TRAN_SUB_TYPE_ID = {tranSubType}
+                    GROUP BY  gadh.id, gadh.rule_id, gadh.LEVEL1_NAME, gadh.LEVEL2_NAME, trn.sku,  gadh.total_amt,gadh.total_qty
+                    """
+
 insertVfiTprDetail = """
                     INSERT INTO ods.gl_alloc_driver_detail(gah_id, rule_id, level1, level2, sku, created_at, sku_amt,sku_qty, alloc_pct,qty_alloc_pct)
                     SELECT   gadh.id, gadh.rule_id, gadh.LEVEL1_NAME, gadh.LEVEL2_NAME, sku, 
@@ -556,7 +600,21 @@ insertDeptDetail = """
                     SYSDATE() AS created_at, sum(trn.{tranColumn}) AS sku_amt,sum(trn.tran_qty) as sku_qty,
                     case when coalesce(gadh.total_amt, 0) <> 0 then sku_amt/gadh.total_amt else 0 end AS alloc_pct,
                     case when coalesce(gadh.total_qty, 0) <> 0 then sku_qty/gadh.total_qty else 0 end AS qty_alloc_pct
-                    FROM ods.TRANSACTIONS trn
+                    FROM ods.transactions trn
+                    INNER JOIN ods.GL_DEPARTMENT_XREF dp ON dp.LOCATION_ID =trn.location_id AND dp.GROUP_ID = trn.group_id
+                    INNER JOIN ods.gl_alloc_driver_header gadh ON dp.dept_id::varchar(100) = gadh.level1_name AND {ruleId} = gadh.rule_id 
+                    WHERE trn.tran_gl_date between '{startDate}' and '{endDate}'
+                    AND TRAN_TYPE = {tranType} AND TRAN_SUB_TYPE_ID = {tranSubType}
+                    GROUP BY  gadh.id, gadh.rule_id, gadh.LEVEL1_NAME, gadh.LEVEL2_NAME, trn.sku,  gadh.total_amt,gadh.total_qty
+                    """
+
+insertDeptUnitsDetail = """
+                    INSERT INTO ods.gl_alloc_driver_detail(gah_id, rule_id, level1, level2, sku, created_at, sku_amt, sku_qty, alloc_pct,qty_alloc_pct)
+                    SELECT   gadh.id, gadh.rule_id, gadh.LEVEL1_NAME, gadh.level2_NAME, sku, 
+                    SYSDATE() AS created_at, sum(trn.{tranColumn}) AS sku_amt,sum(trn.tran_qty) as sku_qty,
+                    case when coalesce(gadh.total_amt, 0) <> 0 then sku_amt/gadh.total_amt else 0 end AS alloc_pct,
+                    case when coalesce(gadh.total_qty, 0) <> 0 then sku_qty/gadh.total_qty else 0 end AS qty_alloc_pct
+                    FROM ods.transactions trn
                     INNER JOIN ods.GL_DEPARTMENT_XREF dp ON dp.LOCATION_ID =trn.location_id AND dp.GROUP_ID = trn.group_id
                     INNER JOIN ods.gl_alloc_driver_header gadh ON dp.dept_id::varchar(100) = gadh.level1_name AND {ruleId} = gadh.rule_id 
                     WHERE trn.tran_gl_date between '{startDate}' and '{endDate}'
