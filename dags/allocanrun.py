@@ -93,6 +93,20 @@ insertAllHeader = """
                 GROUP BY period_end_date 
                 """
 
+insertNPRHeader = """
+                INSERT INTO ods.gl_alloc_driver_header(rule_id, period_end_date, level1 , level1_name , level2, level2_name, created_at, total_amt,total_qty)
+                SELECT {ruleId} AS rule_id, '{endDate}' AS period_end_date, 'all' AS level1, 
+                case when gpgx.CATEGORY_NAME = 'Wine' then 'Wine' else 'Grocery' END AS level1_name, null as level2, null as level2_name, SYSDATE() AS created_at, 
+                SUM(CASE WHEN trn.TRAN_SUB_TYPE_ID = '16' THEN trn.tran_amt ELSE 0 END) -
+                SUM(CASE WHEN trn.TRAN_SUB_TYPE_ID = '48' THEN trn.tran_amt ELSE 0 END) -
+                SUM(CASE WHEN trn.TRAN_SUB_TYPE_ID = '69' THEN trn.tran_amt ELSE 0 END)  AS total_amt ,sum(CASE WHEN trn.TRAN_SUB_TYPE_ID = '16' THEN trn.tran_qty ELSE 0 END) as total_qty
+                FROM ods.V_PROD_TRANSACTIONS trn
+                LEFT OUTER JOIN ods.GL_PRODUCT_group_XREF gpgx ON trn.GROUP_ID  = gpgx.GROUP_ID  AND trn.LOCATION_ID = GPGX.LOCATION_ID 
+                WHERE trn.tran_gl_date between '{startDate}' and '{endDate}' 
+                AND TRAN_TYPE = {tranType} AND TRAN_SUB_TYPE_ID  IN (16,48,69)
+                GROUP BY period_end_date ,level1_name
+                """
+
 
 insertOwnHeader = """
                 INSERT INTO ods.gl_alloc_driver_header(rule_id, period_end_date, level1 , level1_name , level2, level2_name, created_at, total_amt,total_qty)
@@ -236,6 +250,17 @@ insertCatHeader = """
                     GROUP BY period_end_date, gpgx.CATEGORY_NAME 
                     """
 
+insertCatUnitsHeader = """
+                    INSERT INTO ods.gl_alloc_driver_header(rule_id, period_end_date, level1 , level1_name , level2, level2_name, created_at, total_amt,total_qty)
+                    SELECT {ruleId} AS rule_id,  '{endDate}' AS period_end_date, 'category' as level1,
+                    gpgx.CATEGORY_NAME AS level1_name, null as level2, null as level2_name, SYSDATE() AS created_at, 
+                    sum(trn.{tranColumn})  AS total_amt ,sum(trn.tran_qty) as total_qty
+                    FROM ods.V_PROD_TRANSACTIONS trn
+                    LEFT OUTER JOIN ods.GL_PRODUCT_group_XREF gpgx ON trn.GROUP_ID  = gpgx.GROUP_ID  AND trn.LOCATION_ID = GPGX.LOCATION_ID 
+                    WHERE trn.tran_gl_date between '{startDate}' and '{endDate}'
+                    AND TRAN_TYPE = {tranType} AND TRAN_SUB_TYPE_ID = {tranSubType}
+                    GROUP BY period_end_date, gpgx.CATEGORY_NAME 
+                    """
 
 insertPriceBookHeader = """
                     INSERT INTO ods.gl_alloc_driver_header(rule_id, period_end_date, level1 , level1_name , level2, level2_name, created_at, total_amt,total_qty)
@@ -501,6 +526,25 @@ insertAllDetail = """
                     """
 
 
+insertNPRDetail = """
+                    INSERT INTO ods.gl_alloc_driver_detail(gah_id, rule_id, level1, level2, sku, created_at, sku_amt,sku_qty, alloc_pct,qty_alloc_pct)
+                    SELECT   gadh.id, gadh.rule_id, gadh.LEVEL1_NAME, gadh.LEVEL2_NAME, sku, 
+                    SYSDATE() AS created_at,     
+                    SUM(CASE WHEN trn.TRAN_SUB_TYPE_ID = '16' THEN trn.tran_amt ELSE 0 END) -
+                SUM(CASE WHEN trn.TRAN_SUB_TYPE_ID = '48' THEN trn.tran_amt ELSE 0 END) -
+                SUM(CASE WHEN trn.TRAN_SUB_TYPE_ID = '69' THEN trn.tran_amt ELSE 0 END) AS sku_amt
+                ,sum(CASE WHEN trn.TRAN_SUB_TYPE_ID = '16' THEN trn.tran_qty ELSE 0 END) as sku_qty,
+                    case when coalesce(gadh.total_amt, 0) <> 0 then sku_amt/gadh.total_amt else 0 end AS alloc_pct,
+                    case when coalesce(gadh.total_qty, 0) <> 0 then sku_qty/gadh.total_qty else 0 end AS qty_alloc_pct
+                    FROM ods.V_PROD_TRANSACTIONS trn
+                    LEFT OUTER JOIN ods.V_CURR_ITEMS_PRD ci ON trn.sku  = ci.item_name  AND 2 = ci.fc_id 
+                    LEFT OUTER JOIN ods.GL_PRODUCT_group_XREF gpgx ON trn.GROUP_ID  = gpgx.GROUP_ID  AND trn.LOCATION_ID = GPGX.LOCATION_ID 
+                    INNER JOIN ods.gl_alloc_driver_header gadh ON case when gpgx.CATEGORY_NAME = 'Wine' then 'Wine' else 'Grocery' END = gadh.level1_name AND {ruleId} = gadh.rule_id 
+                    WHERE trn.tran_gl_date between '{startDate}' and '{endDate}'
+                    AND TRAN_TYPE = {tranType} AND TRAN_SUB_TYPE_ID  IN (16,48,69)
+                    GROUP BY  gadh.id, gadh.rule_id, gadh.LEVEL1_NAME, gadh.LEVEL2_NAME, trn.sku,  gadh.total_amt,gadh.total_qty
+                    """
+
 
 insertOwnDetail = """
                     INSERT INTO ods.gl_alloc_driver_detail(gah_id, rule_id, level1, level2, sku, created_at, sku_amt, sku_qty, alloc_pct,qty_alloc_pct)
@@ -672,6 +716,20 @@ insertCatDetail =   """
                     GROUP BY  gadh.id, gadh.rule_id, gadh.LEVEL1_NAME, gadh.LEVEL2_NAME, trn.sku,  gadh.total_amt,gadh.total_qty
                     """
 
+
+insertCatUnitsDetail =   """
+                    INSERT INTO ods.gl_alloc_driver_detail(gah_id, rule_id, level1, level2, sku, created_at, sku_amt, sku_qty, alloc_pct,qty_alloc_pct)
+                    SELECT   gadh.id, gadh.rule_id, gadh.LEVEL1_NAME, gadh.LEVEL2_NAME, sku, 
+                    SYSDATE() AS created_at, sum(trn.{tranColumn}) AS sku_amt,sum(trn.tran_qty) as sku_qty,
+                    case when coalesce(gadh.total_amt, 0) <> 0 then sku_amt/gadh.total_amt else 0 end AS alloc_pct,
+                    case when coalesce(gadh.total_qty, 0) <> 0 then sku_qty/gadh.total_qty else 0 end AS qty_alloc_pct
+                    FROM ods.V_PROD_TRANSACTIONS trn
+                    LEFT OUTER JOIN ods.GL_PRODUCT_group_XREF gpgx ON trn.GROUP_ID  = gpgx.GROUP_ID  AND trn.LOCATION_ID = GPGX.LOCATION_ID 
+                    INNER JOIN ods.gl_alloc_driver_header gadh ON gpgx.CATEGORY_NAME = gadh.level1_name AND {ruleId} = gadh.rule_id 
+                    WHERE trn.tran_gl_date between '{startDate}' and '{endDate}'
+                    AND TRAN_TYPE = {tranType} AND TRAN_SUB_TYPE_ID = {tranSubType}
+                    GROUP BY  gadh.id, gadh.rule_id, gadh.LEVEL1_NAME, gadh.LEVEL2_NAME, trn.sku,  gadh.total_amt,gadh.total_qty
+                    """
 
 insertPriceBookDetail =   """
                     INSERT INTO ods.gl_alloc_driver_detail(gah_id, rule_id, level1, level2, sku, created_at, sku_amt, sku_qty, alloc_pct,qty_alloc_pct)
