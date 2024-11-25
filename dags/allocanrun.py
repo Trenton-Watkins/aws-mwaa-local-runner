@@ -339,7 +339,7 @@ insertRefundsHeader = """
                     SELECT {ruleId} AS rule_id, '{endDate}' AS period_end_date, 'credit' AS level1, cmi.ORDER_ID  AS level1_name, null as level2, null as level2_name, SYSDATE() AS created_at,
                     sum(cmi.ROW_TOTAL) AS tran_amt ,sum(cmi.qty_refunded) as total_qty  FROM ods.V_CREDITMEMOITEMS cmi 
                     LEFT JOIN ods.CURR_ITEMS ci ON ci.ITEM_NAME = cmi.sku AND ci.FC_ID =2
-                    WHERE cmi.SKU NOT IN ('membership-product','ice_pack_product') AND ci.GROUP_NAME NOT IN ('Bundle')
+                    WHERE cmi.SKU NOT IN ('membership-product','ice_pack_product') AND ci.GROUP_NAME NOT IN ('Bundle') and convert_timezone('UTC','America/Los_Angeles',cmi.UPDATE_UTC_DATETIME)::date between '{startDate}' and '{endDate}'
                     GROUP BY order_id,period_end_date
                     HAVING tran_amt <>0 or total_qty <>0
                     """
@@ -832,7 +832,7 @@ insertRefundsDetail =   """
                     FROM ods.V_CREDITMEMOITEMS cmi
                     LEFT JOIN ods.CURR_ITEMS ci ON ci.ITEM_NAME = cmi.sku AND ci.FC_ID =2
                     INNER JOIN ods.gl_alloc_driver_header gadh ON cmi.order_id::varchar(100) = gadh.level1_name AND {ruleId} = gadh.rule_id 
-                    where cmi.SKU NOT IN ('membership-product','ice_pack_product') AND ci.GROUP_NAME NOT IN ('Bundle')
+                    where cmi.SKU NOT IN ('membership-product','ice_pack_product') AND ci.GROUP_NAME NOT IN ('Bundle') and convert_timezone('UTC','America/Los_Angeles',cmi.UPDATE_UTC_DATETIME)::date between '{startDate}' and '{endDate}'
                     GROUP BY  gadh.id, gadh.rule_id, gadh.LEVEL1_NAME, gadh.LEVEL2_NAME, cmi.sku,  gadh.total_amt,gadh.total_qty
                     """
 
@@ -1048,7 +1048,7 @@ getMapODS ="""
 
 
 getMapNS ="""
-        SELECT * FROM ods.GL_ALLOCATION_MAP where type ='NS'
+        SELECT * FROM ods.GL_ALLOCATION_MAP where type ='NS' 
         """
 
 # createTranAlloc = """

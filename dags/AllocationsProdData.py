@@ -476,4 +476,4 @@ with DAG('ods_gl_allocations_main_prd_data', default_args=default_args,
 
 spProcessRules >> spProcessAllocation >> spProcessNSAllocation >> spProcessODSRounding
 
-# spProcessRules >> spProcessAllocation >> spProcessODSRounding
+# spProcessRules >> spProcessNSAllocation >> spProcessODSRounding
