@@ -93,6 +93,20 @@ insertAllHeader = """
                 GROUP BY period_end_date 
                 """
 
+insertNPRHeader = """
+                INSERT INTO ods.gl_alloc_driver_header(rule_id, period_end_date, level1 , level1_name , level2, level2_name, created_at, total_amt,total_qty)
+                SELECT {ruleId} AS rule_id, '{endDate}' AS period_end_date, 'all' AS level1, 
+                case when gpgx.CATEGORY_NAME = 'Wine' then 'Wine' else 'Grocery' END AS level1_name, null as level2, null as level2_name, SYSDATE() AS created_at, 
+                SUM(CASE WHEN trn.TRAN_SUB_TYPE_ID = '16' THEN trn.tran_amt ELSE 0 END) -
+                SUM(CASE WHEN trn.TRAN_SUB_TYPE_ID = '48' THEN trn.tran_amt ELSE 0 END) -
+                SUM(CASE WHEN trn.TRAN_SUB_TYPE_ID = '69' THEN trn.tran_amt ELSE 0 END)  AS total_amt ,sum(CASE WHEN trn.TRAN_SUB_TYPE_ID = '16' THEN trn.tran_qty ELSE 0 END) as total_qty
+                FROM ods.TRANSACTIONS trn
+                LEFT OUTER JOIN ods.GL_PRODUCT_group_XREF gpgx ON trn.GROUP_ID  = gpgx.GROUP_ID  AND trn.LOCATION_ID = GPGX.LOCATION_ID 
+                WHERE trn.tran_gl_date between '{startDate}' and '{endDate}' 
+                AND TRAN_TYPE = {tranType} AND TRAN_SUB_TYPE_ID  IN (16,48,69)
+                GROUP BY period_end_date ,level1_name
+                """
+
 
 insertOwnHeader = """
                 INSERT INTO ods.gl_alloc_driver_header(rule_id, period_end_date, level1 , level1_name , level2, level2_name, created_at, total_amt,total_qty)
@@ -161,8 +175,8 @@ insertVfiBrandMarketingHeader = """
                 SELECT {ruleId} AS rule_id, '{endDate}' AS period_end_date, '{rule}' AS level1, 
                 ff.brand_id AS level1_name, null as level2, null as level2_name, SYSDATE() AS created_at, 
                 sum(trn.{tranColumn})  AS total_amt ,sum(trn.tran_qty) as total_qty
-                FROM ods.transactions trn
-                left join ods.BRAND_MARKETING ff ON ff.VENDOR_FUNDING__BRAND_MARKE_ID = trn.brand_marketing_id
+                FROM ods.TRANSACTIONS trn
+                left join ods.BRAND_MARKETING ff ON ff.VENDOR_FUNDING__BRAND_MARKE_ID = trn.brand_marketing_id and trn.tran_sub_type_id = {tranSubType}
                 WHERE trn.tran_gl_date between '{startDate}' and '{endDate}' 
                 AND TRAN_TYPE = {tranType} AND TRAN_SUB_TYPE_ID = {tranSubType}
                 GROUP BY period_end_date ,ff.brand_id
@@ -198,7 +212,7 @@ insertLocUnitsHeader = """
                     FROM ods.transactions trn
                     WHERE trn.tran_gl_date between '{startDate}' and '{endDate}'
                     AND TRAN_TYPE = {tranType} AND TRAN_SUB_TYPE_ID = {tranSubType}
-                    GROUP BY perio      d_end_date, trn.LOCATION_ID 
+                    GROUP BY period_end_date, trn.LOCATION_ID 
                     """
 insertDeptHeader = """
                     INSERT INTO ods.gl_alloc_driver_header(rule_id, period_end_date, level1 , level1_name , level2, level2_name, created_at, total_amt,total_qty)
@@ -236,6 +250,17 @@ insertCatHeader = """
                     GROUP BY period_end_date, gpgx.CATEGORY_NAME 
                     """
 
+insertCatUnitsHeader = """
+                    INSERT INTO ods.gl_alloc_driver_header(rule_id, period_end_date, level1 , level1_name , level2, level2_name, created_at, total_amt,total_qty)
+                    SELECT {ruleId} AS rule_id,  '{endDate}' AS period_end_date, 'category' as level1,
+                    gpgx.CATEGORY_NAME AS level1_name, null as level2, null as level2_name, SYSDATE() AS created_at, 
+                    sum(trn.{tranColumn})  AS total_amt ,sum(trn.tran_qty) as total_qty
+                    FROM ods.TRANSACTIONS trn
+                    LEFT OUTER JOIN ods.GL_PRODUCT_group_XREF gpgx ON trn.GROUP_ID  = gpgx.GROUP_ID  AND trn.LOCATION_ID = GPGX.LOCATION_ID 
+                    WHERE trn.tran_gl_date between '{startDate}' and '{endDate}'
+                    AND TRAN_TYPE = {tranType} AND TRAN_SUB_TYPE_ID = {tranSubType}
+                    GROUP BY period_end_date, gpgx.CATEGORY_NAME 
+                    """
 
 insertPriceBookHeader = """
                     INSERT INTO ods.gl_alloc_driver_header(rule_id, period_end_date, level1 , level1_name , level2, level2_name, created_at, total_amt,total_qty)
@@ -314,7 +339,7 @@ insertRefundsHeader = """
                     SELECT {ruleId} AS rule_id, '{endDate}' AS period_end_date, 'credit' AS level1, cmi.ORDER_ID  AS level1_name, null as level2, null as level2_name, SYSDATE() AS created_at,
                     sum(cmi.ROW_TOTAL) AS tran_amt ,sum(cmi.qty_refunded) as total_qty  FROM ods.credit_memo_items cmi 
                     LEFT JOIN ods.CURR_ITEMS ci ON ci.ITEM_NAME = cmi.sku AND ci.FC_ID =2
-                    WHERE cmi.SKU NOT IN ('membership-product','ice_pack_product') AND ci.GROUP_NAME NOT IN ('Bundle')
+                    WHERE cmi.SKU NOT IN ('membership-product','ice_pack_product') AND ci.GROUP_NAME NOT IN ('Bundle') and convert_timezone('UTC','America/Los_Angeles',cmi.UPDATE_UTC_DATETIME)::date between '{startDate}' and '{endDate}'
                     GROUP BY order_id,period_end_date
                     HAVING tran_amt <>0 or total_qty <>0
                     """
@@ -501,6 +526,25 @@ insertAllDetail = """
                     """
 
 
+insertNPRDetail = """
+                    INSERT INTO ods.gl_alloc_driver_detail(gah_id, rule_id, level1, level2, sku, created_at, sku_amt,sku_qty, alloc_pct,qty_alloc_pct)
+                    SELECT   gadh.id, gadh.rule_id, gadh.LEVEL1_NAME, gadh.LEVEL2_NAME, sku, 
+                    SYSDATE() AS created_at,     
+                    SUM(CASE WHEN trn.TRAN_SUB_TYPE_ID = '16' THEN trn.tran_amt ELSE 0 END) -
+                SUM(CASE WHEN trn.TRAN_SUB_TYPE_ID = '48' THEN trn.tran_amt ELSE 0 END) -
+                SUM(CASE WHEN trn.TRAN_SUB_TYPE_ID = '69' THEN trn.tran_amt ELSE 0 END) AS sku_amt
+                ,sum(CASE WHEN trn.TRAN_SUB_TYPE_ID = '16' THEN trn.tran_qty ELSE 0 END) as sku_qty,
+                    case when coalesce(gadh.total_amt, 0) <> 0 then sku_amt/gadh.total_amt else 0 end AS alloc_pct,
+                    case when coalesce(gadh.total_qty, 0) <> 0 then sku_qty/gadh.total_qty else 0 end AS qty_alloc_pct
+                    FROM ods.TRANSACTIONS trn
+                    LEFT OUTER JOIN ods.V_CURR_ITEMS_PRD ci ON trn.sku  = ci.item_name  AND 2 = ci.fc_id 
+                    LEFT OUTER JOIN ods.GL_PRODUCT_group_XREF gpgx ON trn.GROUP_ID  = gpgx.GROUP_ID  AND trn.LOCATION_ID = GPGX.LOCATION_ID 
+                    INNER JOIN ods.gl_alloc_driver_header gadh ON case when gpgx.CATEGORY_NAME = 'Wine' then 'Wine' else 'Grocery' END = gadh.level1_name AND {ruleId} = gadh.rule_id 
+                    WHERE trn.tran_gl_date between '{startDate}' and '{endDate}'
+                    AND TRAN_TYPE = {tranType} AND TRAN_SUB_TYPE_ID  IN (16,48,69)
+                    GROUP BY  gadh.id, gadh.rule_id, gadh.LEVEL1_NAME, gadh.LEVEL2_NAME, trn.sku,  gadh.total_amt,gadh.total_qty
+                    """
+
 
 insertOwnDetail = """
                     INSERT INTO ods.gl_alloc_driver_detail(gah_id, rule_id, level1, level2, sku, created_at, sku_amt, sku_qty, alloc_pct,qty_alloc_pct)
@@ -579,7 +623,7 @@ insertVfiFreeFillDetail = """
                     case when coalesce(gadh.total_amt, 0) <> 0 then sku_amt/gadh.total_amt else 0 end AS alloc_pct,
                     case when coalesce(gadh.total_qty, 0) <> 0 then sku_qty/gadh.total_qty else 0 end AS qty_alloc_pct
                     FROM ods.TRANSACTIONS trn
-                    left join ods.FREE_FILL ff ON ff.VENDOR_FUNDING__FREE_FILL_B_ID = trn.brand_marketing_id
+                    left join ods.FREE_FILL ff ON ff.VENDOR_FUNDING__FREE_FILL_B_ID = trn.brand_marketing_id and trn.tran_sub_type_id = {tranSubType}
                     LEFT OUTER JOIN ods.CURR_ITEMS ci ON ff.UPC_CODE_ID  = ci.item_id  AND 2 = ci.fc_id 
                     INNER JOIN ods.gl_alloc_driver_header gadh ON  {ruleId} = gadh.rule_id 
                     WHERE trn.tran_gl_date between '{startDate}' and '{endDate}'
@@ -673,6 +717,20 @@ insertCatDetail =   """
                     """
 
 
+insertCatUnitsDetail =   """
+                    INSERT INTO ods.gl_alloc_driver_detail(gah_id, rule_id, level1, level2, sku, created_at, sku_amt, sku_qty, alloc_pct,qty_alloc_pct)
+                    SELECT   gadh.id, gadh.rule_id, gadh.LEVEL1_NAME, gadh.LEVEL2_NAME, sku, 
+                    SYSDATE() AS created_at, sum(trn.{tranColumn}) AS sku_amt,sum(trn.tran_qty) as sku_qty,
+                    case when coalesce(gadh.total_amt, 0) <> 0 then sku_amt/gadh.total_amt else 0 end AS alloc_pct,
+                    case when coalesce(gadh.total_qty, 0) <> 0 then sku_qty/gadh.total_qty else 0 end AS qty_alloc_pct
+                    FROM ods.TRANSACTIONS trn
+                    LEFT OUTER JOIN ods.GL_PRODUCT_group_XREF gpgx ON trn.GROUP_ID  = gpgx.GROUP_ID  AND trn.LOCATION_ID = GPGX.LOCATION_ID 
+                    INNER JOIN ods.gl_alloc_driver_header gadh ON gpgx.CATEGORY_NAME = gadh.level1_name AND {ruleId} = gadh.rule_id 
+                    WHERE trn.tran_gl_date between '{startDate}' and '{endDate}'
+                    AND TRAN_TYPE = {tranType} AND TRAN_SUB_TYPE_ID = {tranSubType}
+                    GROUP BY  gadh.id, gadh.rule_id, gadh.LEVEL1_NAME, gadh.LEVEL2_NAME, trn.sku,  gadh.total_amt,gadh.total_qty
+                    """
+
 insertPriceBookDetail =   """
                     INSERT INTO ods.gl_alloc_driver_detail(gah_id, rule_id, level1, level2, sku, created_at, sku_amt, sku_qty, alloc_pct,qty_alloc_pct)
                     SELECT   gadh.id, gadh.rule_id, gadh.LEVEL1_NAME, gadh.LEVEL2_NAME, sku, 
@@ -758,7 +816,7 @@ insertBrandDetail = """
 insertVfiBrandMarketingDetail = """
                     INSERT INTO ods.gl_alloc_driver_detail(gah_id, rule_id, level1, level2, sku, created_at, sku_amt,sku_qty, alloc_pct,qty_alloc_pct)     
                     SELECT gadh.id, gadh.rule_id, gadh.LEVEL1_NAME, gadh.LEVEL2_NAME,dd.sku, sysdate() AS created_at,sum(tr.tran_amt) * dd.ALLOC_PCT AS sku_amt ,0 AS sku_qty, dd.ALLOC_PCT / sum(dd.alloc_pct) over () as alloc,0 AS qty_pct  FROM ods.TRANSACTIONS tr
-                    left join ods.BRAND_MARKETING ff ON ff.VENDOR_FUNDING__BRAND_MARKE_ID = tr.brand_marketing_id
+                    left join ods.BRAND_MARKETING ff ON ff.VENDOR_FUNDING__BRAND_MARKE_ID = tr.brand_marketing_id and tr.tran_sub_type_id = {tranSubType}
                     inner JOIN ods.GL_ALLOC_DRIVER_DETAIL dd ON dd.LEVEL1::varchar =ff.BRAND_ID::varchar AND dd.rule_id = '202' 
                     inner JOIN ods.gl_alloc_driver_header gadh ON  {ruleId} = gadh.rule_id AND gadh.LEVEL1_NAME::varchar =ff.BRAND_ID ::varchar
                     WHERE TRAN_TYPE ={tranType}  AND TRAN_SUB_TYPE_ID = {tranSubType} AND tran_gl_date between '{startDate}' and '{endDate}'
@@ -774,7 +832,7 @@ insertRefundsDetail =   """
                     FROM ods.credit_memo_items cmi
                     LEFT JOIN ods.CURR_ITEMS ci ON ci.ITEM_NAME = cmi.sku AND ci.FC_ID =2
                     INNER JOIN ods.gl_alloc_driver_header gadh ON cmi.order_id::varchar(100) = gadh.level1_name AND {ruleId} = gadh.rule_id 
-                    where cmi.SKU NOT IN ('membership-product','ice_pack_product') AND ci.GROUP_NAME NOT IN ('Bundle')
+                    where cmi.SKU NOT IN ('membership-product','ice_pack_product') AND ci.GROUP_NAME NOT IN ('Bundle') and convert_timezone('UTC','America/Los_Angeles',cmi.UPDATE_UTC_DATETIME)::date between '{startDate}' and '{endDate}'
                     GROUP BY  gadh.id, gadh.rule_id, gadh.LEVEL1_NAME, gadh.LEVEL2_NAME, cmi.sku,  gadh.total_amt,gadh.total_qty
                     """
 
@@ -1484,7 +1542,7 @@ createDefaultAlloc ={"0-allocate":"""
                         LEFT JOIN (SELECT *, accountnumber AS acct_number FROM ods.GL_ALLOCATION_MAP) mp ON  mp.accountnumber::varchar = '{accountnumber}'  {join}
                         inner join ods.gl_alloc_driver_header gah on gah.id = dd.gah_id and gah.rule_id ='{ruleId}' {join2}
                         left join ods.CURR_ITEMS ci on ci.item_name = dd.sku and ci.fc_id = 2 
-                        where na.PERIODNAME = '{period}' and na.ACCOUNTNAME::varchar = '{accountnumber}' and na.tran_allocated ='N'
+                        where na.PERIODNAME = '{period}' and na.ACCOUNTNAME::varchar = '{accountnumber}' and na.tran_allocated ='N' {locjoin}
                     """,
                         "1- update ns allocation table ":"""
                         update ods.ns_cm_gl_activity cm
@@ -1493,7 +1551,7 @@ createDefaultAlloc ={"0-allocate":"""
                         LEFT JOIN (SELECT *, accountnumber AS acct_number FROM ods.GL_ALLOCATION_MAP) mp ON mp.accountnumber::varchar = '{accountnumber}'  {join}
                         inner join ods.gl_alloc_driver_header gah on gah.id = dd.gah_id and gah.rule_id ='{ruleId}' {join2}
                         left join ods.CURR_ITEMS ci on ci.item_name = dd.sku and ci.fc_id = 2 
-                        where na.PERIODNAME = '{period}' and na.ACCOUNTNAME::varchar = '{accountnumber}' and na.tran_allocated ='N' ) upd
+                        where na.PERIODNAME = '{period}' and na.ACCOUNTNAME::varchar = '{accountnumber}' and na.tran_allocated ='N' {locjoin} ) upd
                         where upd.unique_key  = cm.unique_key
                         """}
 
@@ -1622,7 +1680,7 @@ createDefaultAccountAlloc ={"0 - allocate":"""
                                 when gah.total_amt <>0 THEN ns_amt * alloc_pct
                                  else ns_amt * qty_alloc_pct end AS allocated_amt,
                                   '{tran_type}','{tran_sub_type}','{tran_sub_type_id}' FROM test 
-                                  LEFT JOIN (SELECT *, accountnumber AS acct_number FROM ods.GL_ALLOCATION_MAP) mp ON '{accountnumber}' = mp.accountnumber::varchar {join}
+                                  LEFT JOIN (SELECT distinct category ,accountnumber, accountnumber AS acct_number FROM ods.GL_ALLOCATION_MAP) mp ON '{accountnumber}' = mp.accountnumber::varchar {join}
                         inner join ods.gl_alloc_driver_header gah on gah.id = dd.gah_id and gah.rule_id ='{ruleId}'  {join2}
                         left join ods.CURR_ITEMS ci on ci.item_name = dd.sku and ci.fc_id = 2 
                     """,
@@ -1651,7 +1709,7 @@ createDefaultNoSkuAccountAlloc ={"0 -allocate" :"""
                         ,sysdate(),SKU_AMT,ALLOC_PCT,SKU_QTY,QTY_ALLOC_PCT,
                         ns_amt AS allocated_amt,
                                   '{tran_type}','{tran_sub_type}','{tran_sub_type_id}' FROM test 
-                        LEFT JOIN (SELECT *, accountnumber AS acct_number FROM ods.GL_ALLOCATION_MAP) mp ON '{accountnumber}' = mp.accountnumber::varchar {join}          
+                        LEFT JOIN (SELECT distinct category ,accountnumber, accountnumber AS acct_number FROM ods.GL_ALLOCATION_MAP) mp ON '{accountnumber}' = mp.accountnumber::varchar {join}          
                         left join ods.gl_alloc_driver_header gah on gah.id = dd.gah_id and gah.rule_id ='{ruleId}' 
                         left join ods.CURR_ITEMS ci on ci.item_name = dd.sku and ci.fc_id = 2 
                         where gah.id is null 
