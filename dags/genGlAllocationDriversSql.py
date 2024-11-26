@@ -8,6 +8,13 @@ getPeriod = """
                                 WHERE FULLDATE = '{current_date}')
 			"""
 
+
+
+getPeriodControl = """
+            SELECT date_value
+            FROM ods.control where control_name = 'gl_allocation_date'  
+			"""
+
 # getPeriod = """
 #             SELECT *,MONTHNAME(month_end_date) || ' ' || SUBSTRING(CALENDARYEARQTR,1,4) AS quartertext
 #             FROM ods.CAL_LU 

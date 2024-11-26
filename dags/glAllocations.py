@@ -8,12 +8,12 @@ import genGlAllocationDriversSql as glSql
 ALERT_MESSAGE = "Daily load seems to have failed. WARNING: Updates for this run will be delayed."
 ENV = "PRODUCTION" if Variable.get("AIRFLOW_ENV", default_var="stg") == "prd" else "STAGING"
 
-DAG_START_DATE = datetime(2024, 9, 1)
+run_date = datetime.now()
 
 default_args = {
     'owner': 'Trenton Watkins',
     'depends_on_past': False,
-    'start_date': DAG_START_DATE,
+    'start_date': run_date,
     'retries': 0,
     'retry_delay': timedelta(minutes=1),
     'email_on_failure': False,
@@ -30,8 +30,19 @@ default_args = {
 
 #     return
 def getPeriod():
+    
+    sql = glSql.getPeriodControl
+    readConn.db_execute(sql)
+    row = readConn.db_getOneRow()
+    cn = readConn.columnName(row)
+    allocation_date = cn.date_value
     sql = glSql.getPeriod
-    sql = sql.format(current_date = DAG_START_DATE)
+
+    if allocation_date is None:
+        sql = sql.format(current_date = run_date)
+    else:
+        sql =  sql.format(current_date = allocation_date)
+
     readConn.db_execute(sql)
     row = readConn.db_getOneRow()
     cn = readConn.columnName(row)
@@ -168,15 +179,22 @@ def processNSAllocations(rowCn, runid, periodStartDate, periodEndDate,periodname
     trantype = rowCn.tran_type
     nstran = rowCn.ns_trans_allocation
 
-    print(f"Allocating Account Number : {nsaccount} using allocation rule: {ruleId} with default {default}")
+    print(f"Allocating Account Number : {nsaccount} using allocation rule: {ruleId} with default {default} on location : {location}")
     
     joinfilter =''
     joinclause =''
     filter2=''
+    locationclause=''
     if category is not None:
         joinfilter += f"AND dd.LEVEL1 =  mp.category  "
     
-    if ruleId ==501:
+    if location is not None:
+        joinfilter += f"AND dd.LEVEL1 = {location}"
+        filter2 = f"AND gah.LEVEL1_name = {location}"
+        joinclause += f"and mp.location = {location}"
+        locationclause +=f"and na.location_id = {location}"
+
+    if ruleId in [501,502]:
         joinfilter += f"AND dd.LEVEL1::varchar = coalesce(na.department_id,22)::varchar"
         filter2 += f""" and coalesce(na.department_id,22)::varchar = gah.level1_name::varchar"""
         # joinclause += """left join(select distinct location_ic as fc_id , dept_id from ods.GL_DEPARTMENT_XREF) fcr on fcr.dept_id = na.department_id  """
@@ -197,8 +215,7 @@ def processNSAllocations(rowCn, runid, periodStartDate, periodEndDate,periodname
                             AND level1 = '{accountmap}'), 
                         '40100') """
     else:
-        joinclause +=f"""
-                    LEFT JOIN ods.GL_ALLOC_DRIVER_DETAIL dd ON dd.rule_id ={ruleId} {joinfilter}
+        joinclause +=f"""LEFT JOIN ods.GL_ALLOC_DRIVER_DETAIL dd ON dd.rule_id ={ruleId} {joinfilter}
                     """
         
     print('Running CreateNSAlloc')     
@@ -217,7 +234,7 @@ def processNSAllocations(rowCn, runid, periodStartDate, periodEndDate,periodname
             print('Running createDefaultAlloc')  
             for key, query in glSql.createDefaultAlloc.items(): 
 
-                sql = query.format(join2 = filter2,join = joinclause,ruleId=ruleId,tran_type = trantype ,tran_sub_type_id = transubtypeid,tran_sub_type = transubtype, accountmap = accountmap , accountnumber= nsaccount,  period = periodname)
+                sql = query.format(locjoin = locationclause ,join2 = filter2,join = joinclause,ruleId=ruleId,tran_type = trantype ,tran_sub_type_id = transubtypeid,tran_sub_type = transubtype, accountmap = accountmap , accountnumber= nsaccount,  period = periodname)
                 print(sql)
                 writeConn.db_execute(sql)
 
@@ -259,9 +276,7 @@ def processNSAllocations(rowCn, runid, periodStartDate, periodEndDate,periodname
 
 
 def processPostAllocations( periodStartDate, periodEndDate):  
-    sql = glSql.catchAllocation 
-    sql = sql.format( startDate=periodStartDate, endDate=periodEndDate)
-    writeConn.db_execute(sql)
+  
     
     print('Creating OOB')
     sql = glSql.createTranOob
@@ -281,7 +296,20 @@ def processPostAllocations( periodStartDate, periodEndDate):
     # print(sql)
     writeConn.db_execute(sql)
     
+    
+    sql = glSql.createAccountTranOob 
+    # sql = getattr(glSql, sqlAttribute + 'Detail')
 
+    sql = sql.format( startDate=periodStartDate, endDate=periodEndDate)
+    # print(sql)
+    writeConn.db_execute(sql)
+    
+    sql = glSql.updateAccountTranAlloc 
+    # sql = getattr(glSql, sqlAttribute + 'Detail')
+
+    sql = sql.format( startDate=periodStartDate, endDate=periodEndDate)
+    # print(sql)
+    writeConn.db_execute(sql)
     
 
 
@@ -318,10 +346,32 @@ def processRules():
     
     writeConn.db_execute("""truncate ods.GL_ALLOC_DRIVER_HEADER""")
     writeConn.db_execute("""truncate ods.GL_ALLOC_DRIVER_DETAIL""")
-   
+    writeConn.db_execute("""truncate ods.inbnd_freight_costs""")
+
+
     period, periodStartDate, periodEndDate,periodname = getPeriod()
     rows = getRules()
 
+    
+    
+
+  
+    sql = getattr(glSql, 'getInboundFreight')
+
+    sql = sql.format( endDate=periodEndDate )
+
+
+    print(sql)
+
+    writeConn.db_execute(sql, commit=True)
+
+
+    writeConn.db_execute(f""" delete from ods.freight_costs_log
+                         where period_end_date = '{periodEndDate}'""")
+
+
+    writeConn.db_execute(f""" insert into ods.freight_costs_log
+                         select *,'{periodEndDate}' from ods.inbnd_freight_costs""")
 
     for row in rows:
 
@@ -359,6 +409,10 @@ def processAllocation():
     for row in rows:
         rowCn = readConn.columnName(row)
         status = processGlAllocations(rowCn,  periodStartDate, periodEndDate)
+    
+    sql = glSql.catchAllocation 
+    sql = sql.format( startDate=periodStartDate, endDate=periodEndDate)
+    writeConn.db_execute(sql)    
 
 def processAllocationsNS():
     global readConn, writeConn
@@ -402,7 +456,7 @@ def processRounding():
 
 
 with DAG('ods_gl_allocations_main', default_args=default_args,
-          schedule_interval=None, catchup=False, max_active_runs=1) as dag:
+          schedule_interval='0 6 3-5 * *', catchup=False, max_active_runs=1) as dag:
 
 
     spProcessRules = PythonOperator(dag=dag,

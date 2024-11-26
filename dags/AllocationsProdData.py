@@ -8,12 +8,12 @@ import allocanrun as glSql
 ALERT_MESSAGE = "Daily load seems to have failed. WARNING: Updates for this run will be delayed."
 ENV = "PRODUCTION" if Variable.get("AIRFLOW_ENV", default_var="stg") == "prd" else "STAGING"
 
-DAG_START_DATE = datetime(2024,9, 1)
+run_date = datetime.now()
 
 default_args = {
     'owner': 'Trenton Watkins',
     'depends_on_past': False,
-    'start_date': DAG_START_DATE,
+    'start_date': run_date,
     'retries': 0,
     'retry_delay': timedelta(minutes=1),
     'email_on_failure': False,
@@ -30,8 +30,19 @@ default_args = {
 
 #     return
 def getPeriod():
+
+    sql = glSql.getPeriodControl
+    readConn.db_execute(sql)
+    row = readConn.db_getOneRow()
+    cn = readConn.columnName(row)
+    allocation_date = cn.date_value
     sql = glSql.getPeriod
-    sql = sql.format(current_date = DAG_START_DATE)
+
+    if allocation_date is None:
+        sql = sql.format(current_date = run_date)
+    else:
+        sql =  sql.format(current_date = allocation_date)
+
     readConn.db_execute(sql)
     row = readConn.db_getOneRow()
     cn = readConn.columnName(row)
@@ -329,6 +340,7 @@ def processPostAllocationsNS(rowCn,  periodEndDate,periodname):
 
     writeConn.db_commit()
 
+
 def processRules():
     global readConn, writeConn
     readConn = db_connect(dag=DAG, conn_type='snowflake', conn_id='snowflake_ods_stg')
@@ -455,25 +467,26 @@ with DAG('ods_gl_allocations_main_prd_data', default_args=default_args,
                                     provide_context=True,
                                     op_kwargs={})
 
-    spProcessAllocation = PythonOperator(dag=dag,
-                                    task_id='process_allocations_ods',
-                                    python_callable=processAllocation,
-                                    provide_context=True,
-                                    op_kwargs={})
+    # spProcessAllocation = PythonOperator(dag=dag,
+    #                                 task_id='process_allocations_ods',
+    #                                 python_callable=processAllocation,
+    #                                 provide_context=True,
+    #                                 op_kwargs={})
     
-    spProcessNSAllocation = PythonOperator(dag=dag,
-                                    task_id='process_allocations_ns',
-                                    python_callable=processAllocationsNS,
-                                    provide_context=True,
-                                    op_kwargs={})
+    # spProcessNSAllocation = PythonOperator(dag=dag,
+    #                                 task_id='process_allocations_ns',
+    #                                 python_callable=processAllocationsNS,
+    #                                 provide_context=True,
+    #                                 op_kwargs={})
     
-    spProcessODSRounding = PythonOperator(dag=dag,
-                                    task_id='process_ODS_rounding',
-                                    python_callable=processRounding,
-                                    provide_context=True,
-                                    op_kwargs={})
+    # spProcessODSRounding = PythonOperator(dag=dag,
+    #                                 task_id='process_ODS_rounding',
+    #                                 python_callable=processRounding,
+    #                                 provide_context=True,
+    #                                 op_kwargs={})
 
 
-spProcessRules >> spProcessAllocation >> spProcessNSAllocation >> spProcessODSRounding
+spProcessRules 
+# >> spProcessAllocation >> spProcessNSAllocation >> spProcessODSRounding
 
 # spProcessRules >> spProcessNSAllocation >> spProcessODSRounding
